@@ -1,0 +1,28 @@
+{
+  "enabledPlugins": {
+    "context7@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "skill-creator@claude-plugins-official": true
+  },
+  "projectName": "AuctionBonanza",
+  "description": "An auction platform/marketplace application",
+  "mainLanguage": "typescript",
+  "frameworks": [
+    "node"
+  ],
+  "entryPoint": "src/index.js",
+  "testPath": "tests/",
+  "sourceDir": "src/",
+  "exclude": [
+    "node_modules",
+    ".git",
+    "dist",
+    "build"
+  ],
+  "rules": {
+    "noProactiveRefactoring": true,
+    "preferExistingPatterns": true
+  }
+}
