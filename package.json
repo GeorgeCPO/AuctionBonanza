@@ -3,6 +3,11 @@
   "private": true,
   "scripts": {
     "build": "pnpm --recursive --if-present run build",
+    "db:dump": "dbmate --migrations-dir db/migrations --schema-file db/schema.sql dump",
+    "db:migrate": "dbmate --migrations-dir db/migrations --no-dump-schema migrate && dbmate --migrations-dir db/migrations --schema-file db/schema.sql dump",
+    "db:new": "dbmate --migrations-dir db/migrations new",
+    "db:rollback": "dbmate --migrations-dir db/migrations --no-dump-schema rollback && dbmate --migrations-dir db/migrations --schema-file db/schema.sql dump",
+    "db:status": "dbmate --migrations-dir db/migrations status",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
@@ -12,6 +17,7 @@
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "devDependencies": {
+    "dbmate": "2.35.1",
     "oxfmt": "0.66.0",
     "oxlint": "1.81.0",
     "oxlint-tsgolint": "7.0.2001"

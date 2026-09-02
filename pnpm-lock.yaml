@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      dbmate:
+        specifier: 2.35.1
+        version: 2.35.1
       oxfmt:
         specifier: 0.66.0
         version: 0.66.0
@@ -59,6 +62,41 @@ importers:
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3))
 
 packages:
+
+  '@dbmate/darwin-arm64@2.35.1':
+    resolution: {integrity: sha512-M63uycMI/sBHdjlf9NOn3YO2rKz4m3gLo/1kJ2QceODO724nZ4hJbsyfVHTpKpuHd6lct4+Vnhuqfz7lS9dKhg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@dbmate/darwin-x64@2.35.1':
+    resolution: {integrity: sha512-03QeOqT/RZZhX+v1B2+pkd6HPhSeAjz43LOm7ljylKP/D+/VKbg1QkxAcehsO20i3s7hIxH9+I/WmPyffRwMxw==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@dbmate/linux-arm64@2.35.1':
+    resolution: {integrity: sha512-GqK2KVT2jbSe5vM16oHMpi0v6nvDwgeoM6M8k1XFV/RB1rfuG/33BMzTbgIsV91jLjed0PMeiQVvgWr41Se9Jg==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@dbmate/linux-arm@2.35.1':
+    resolution: {integrity: sha512-LOhSMHzTKcy5KbsFYsQnY36B6GLS6xH8BiBSaI84vTkwmbezggDIzGbZ4Eq+FCD9eMS7lLfmpmoOZoLrwbb3IQ==}
+    cpu: [arm]
+    os: [linux]
+
+  '@dbmate/linux-ia32@2.35.1':
+    resolution: {integrity: sha512-e38FzTUdraDS2tdI34QHr8Gf68TOS8dPsVdfrl+y7La2hSn8UIMtQ43cMaExTyHo6uZ9mFKUeIxgwVgAxDrQbQ==}
+    cpu: [ia32]
+    os: [linux]
+
+  '@dbmate/linux-x64@2.35.1':
+    resolution: {integrity: sha512-gdr9Q6vMMUaNYz8fv64oNSuoHYLjpeuZjahY6J7Dy4c6wQVcfLs7t3aiBCBxlvVkjJJIr5Ig3ApwqC0V2IojQA==}
+    cpu: [x64]
+    os: [linux]
+
+  '@dbmate/win32-x64@2.35.1':
+    resolution: {integrity: sha512-1pP+/oDEeOLvrvPdirM8VIi/+8v8Qf9fDOpNo3nRslQPaoOTJKsMaVLr5b5Ba/UrOisFYJmLKslgWvvjGAY7wg==}
+    cpu: [x64]
+    os: [win32]
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -816,6 +854,10 @@ packages:
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
 
+  dbmate@2.35.1:
+    resolution: {integrity: sha512-TGhNRbSnlLeLjpV/m4uHJSwZhsJZEeE+IIl98UYbb6s63j1ZsPY6XuVWL6pl3YYyfupVh7pAye6iuOAYf3Maxw==}
+    hasBin: true
+
   es-module-lexer@2.3.2:
     resolution: {integrity: sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==}
 
@@ -1033,6 +1075,27 @@ packages:
     hasBin: true
 
 snapshots:
+
+  '@dbmate/darwin-arm64@2.35.1':
+    optional: true
+
+  '@dbmate/darwin-x64@2.35.1':
+    optional: true
+
+  '@dbmate/linux-arm64@2.35.1':
+    optional: true
+
+  '@dbmate/linux-arm@2.35.1':
+    optional: true
+
+  '@dbmate/linux-ia32@2.35.1':
+    optional: true
+
+  '@dbmate/linux-x64@2.35.1':
+    optional: true
+
+  '@dbmate/win32-x64@2.35.1':
+    optional: true
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true
@@ -1447,6 +1510,16 @@ snapshots:
   chai@6.2.2: {}
 
   convert-source-map@2.0.0: {}
+
+  dbmate@2.35.1:
+    optionalDependencies:
+      '@dbmate/darwin-arm64': 2.35.1
+      '@dbmate/darwin-x64': 2.35.1
+      '@dbmate/linux-arm': 2.35.1
+      '@dbmate/linux-arm64': 2.35.1
+      '@dbmate/linux-ia32': 2.35.1
+      '@dbmate/linux-x64': 2.35.1
+      '@dbmate/win32-x64': 2.35.1
 
   es-module-lexer@2.3.2: {}
 
