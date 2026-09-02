@@ -61,7 +61,9 @@ Bid acceptance starts as a synchronous operation in `auction-service`. The datab
 - Use `pg` (`node-postgres`) directly and write parameterized SQL.
 - Keep transaction handling explicit and execute a transaction through one checked-out client.
 - Use `dbmate` with raw SQL migration files.
-- Treat SQL migrations as the executable source of truth. Keep `db/schema.dbml` as the human-readable design model.
+- Treat SQL migrations as the executable source of truth. Commit the generated
+  `db/schema.sql` snapshot so the complete current PostgreSQL schema is easy to
+  inspect without reconstructing it from migration history.
 - Keep PostgreSQL `bigint` IDs and monetary minor-unit values out of JavaScript `number`; use safe string or `bigint` representations and serialize them deliberately.
 - Plan to deploy Amazon RDS for PostgreSQL 18.6. Local Compose uses the matching `postgres:18.6-bookworm` engine image; AWS-managed storage, backups, and failover remain intentional differences to document and test when deployment begins.
 

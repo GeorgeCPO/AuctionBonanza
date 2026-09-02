@@ -23,7 +23,8 @@ This is a project aimed to turn a competent backend engineer into someone who ca
 
 ## Local foundation
 
-Prerequisites are Node.js 24.20.0, pnpm 11.25.0, and Docker with Compose.
+Prerequisites are Node.js 24.20.0, pnpm 11.25.0, Docker with Compose, and
+PostgreSQL client tools containing `pg_dump` 18.x for schema snapshots.
 
 Direct dependencies are pinned to exact versions. Use `pnpm add --save-exact`
 when adding a dependency (the repository enforces this default), and commit the
@@ -33,6 +34,8 @@ resulting `pnpm-lock.yaml` change.
 pnpm install
 pnpm check
 docker compose up -d postgres
+cp .env.example .env
+pnpm db:migrate
 ```
 
 Use `pnpm format` to apply repository formatting, `pnpm format:check` to verify
@@ -43,6 +46,12 @@ The Compose stack currently contains PostgreSQL only. It runs
 `postgres:18.6-bookworm` to match the planned Amazon RDS for PostgreSQL 18.6
 engine version, and exposes the local `auction_db` database on port `5432`
 using the development-only credentials in `docker-compose.yml`.
+
+Database migrations are owned centrally because the initial services share
+`auction_db`. Use `pnpm db:status`, `pnpm db:migrate`, and `pnpm db:rollback`
+from the repository root. Migrate and rollback regenerate the committed
+`db/schema.sql` snapshot. See `db/migrations/README.md` for the workflow, naming,
+and schema decisions.
 
 To exercise the identity service's runtime configuration loader:
 
