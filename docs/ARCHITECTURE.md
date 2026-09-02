@@ -11,11 +11,11 @@ Status: accepted as the initial direction; expected to evolve through deliberate
 
 ## Initial deployment units
 
-| Service | Initial responsibility |
-| --- | --- |
-| `identity-service` | User registration, authentication, and user-owned data. |
-| `auction-service` | Auction lifecycle and synchronous bid acceptance. Auctions and bids remain together initially because they share a strong correctness boundary. |
-| `realtime-gateway` | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid. |
+| Service            | Initial responsibility                                                                                                                          |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `identity-service` | User registration, authentication, and user-owned data.                                                                                         |
+| `auction-service`  | Auction lifecycle and synchronous bid acceptance. Auctions and bids remain together initially because they share a strong correctness boundary. |
+| `realtime-gateway` | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid.                                 |
 
 A settlement worker can be added when orders, payments, and auction closing enter scope.
 
@@ -42,8 +42,9 @@ Bid acceptance starts as a synchronous operation in `auction-service`. The datab
 
 ### Runtime and monorepo
 
-- Use the current Node.js 24 LTS release, TypeScript in strict mode, and ECMAScript modules.
+- Use Node.js 24.20.0, TypeScript in strict mode, and ECMAScript modules. The version is pinned locally and in CI to align with the Node.js 24 AWS runtime family.
 - Use `pnpm` workspaces for dependency and workspace management.
+- Pin direct dependency and package-manager versions exactly. Commit `pnpm-lock.yaml` so all transitive dependency versions are reproducible; update dependencies deliberately as reviewed changes.
 - Start with package scripts for per-service builds and tests. Add Turborepo only when task orchestration or build times justify it.
 - Give each service its own package manifest, TypeScript configuration, Dockerfile, tests, and validated runtime configuration when implementation begins.
 
@@ -62,6 +63,7 @@ Bid acceptance starts as a synchronous operation in `auction-service`. The datab
 - Use `dbmate` with raw SQL migration files.
 - Treat SQL migrations as the executable source of truth. Keep `db/schema.dbml` as the human-readable design model.
 - Keep PostgreSQL `bigint` IDs and monetary minor-unit values out of JavaScript `number`; use safe string or `bigint` representations and serialize them deliberately.
+- Plan to deploy Amazon RDS for PostgreSQL 18.6. Local Compose uses the matching `postgres:18.6-bookworm` engine image; AWS-managed storage, backups, and failover remain intentional differences to document and test when deployment begins.
 
 The first phase uses one PostgreSQL database, `auction_db`, with the initial `users`, `auctions`, and `bids` tables. Database-per-service is not required at the start.
 
@@ -92,6 +94,7 @@ Start with versioned JSON event schemas in `packages/contracts`. A schema regist
 - Use Fastify's Pino integration for structured logs.
 - Propagate request, correlation, causation, event, and auction identifiers.
 - Add OpenTelemetry traces and metrics as cross-service flows appear.
+- Use Oxlint with its TypeScript 7 type-aware runtime for linting and Oxfmt for formatting. Keep `tsc --noEmit` as the canonical type check because Oxlint's type-check mode is still experimental.
 - Use Vitest for test execution.
 - Use Testcontainers for integration tests against real PostgreSQL and Kafka instances.
 - Use k6 for load generation and Toxiproxy for controlled network failures.

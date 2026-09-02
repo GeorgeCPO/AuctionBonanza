@@ -38,5 +38,4 @@ Split one PostgreSQL database into four shards.
 
 Application continues running.
 
-
 At the end i should be able to explain what happened in every one of those scenarios, in order to reduce Kafka and database blind spots.
