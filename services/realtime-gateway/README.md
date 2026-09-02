@@ -1,7 +1,8 @@
 # Realtime Gateway
 
-Placeholder for the independently buildable and deployable realtime gateway.
+Independently buildable and testable foundation for the realtime gateway.
 
 Its initial responsibility is consuming committed auction events and delivering client updates over Server-Sent Events. It must not decide whether a bid is valid or become the source of auction truth.
 
-No implementation has been added yet.
+The current entry point is intentionally minimal. Event consumption, SSE
+delivery, and runtime configuration will be added in later milestones.

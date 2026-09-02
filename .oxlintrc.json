@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "options": {
+    "typeAware": true
+  },
+  "plugins": ["typescript", "vitest"],
+  "ignorePatterns": ["node_modules/**", "dist/**", "coverage/**"],
+  "rules": {
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-unused-vars": "error",
+    "vitest/no-focused-tests": "error"
+  }
+}
