@@ -8,9 +8,20 @@ export type QueryResult = Readonly<{
 
 export interface Database {
   query(text: string, values?: readonly unknown[]): Promise<QueryResult>;
+  connect(): Promise<DatabaseClient>;
 }
 
-export function createDatabasePool(config: IdentityConfig): Pool {
+export interface DatabaseClient {
+  query(text: string, values?: readonly unknown[]): Promise<QueryResult>;
+  release(): void;
+}
+
+export interface DatabasePool extends Database {
+  end(): Promise<void>;
+  emit(event: "error", error: Error): boolean;
+}
+
+export function createDatabasePool(config: IdentityConfig): DatabasePool {
   const pool = new Pool({
     connectionString: config.databaseUrl,
     max: 10,
@@ -22,5 +33,16 @@ export function createDatabasePool(config: IdentityConfig): Pool {
     console.error("Unexpected error from an idle PostgreSQL client", error);
   });
 
-  return pool;
+  return {
+    query: async (text, values) => pool.query(text, values as unknown[] | undefined),
+    connect: async () => {
+      const client = await pool.connect();
+      return {
+        query: async (text, values) => client.query(text, values as unknown[] | undefined),
+        release: () => client.release(),
+      };
+    },
+    end: async () => pool.end(),
+    emit: (event, error) => pool.emit(event, error),
+  };
 }

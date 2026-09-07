@@ -21,6 +21,22 @@ importers:
         specifier: 7.0.2001
         version: 7.0.2001
 
+  packages/access-auth:
+    dependencies:
+      jose:
+        specifier: 6.2.10
+        version: 6.2.10
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3))
+
   packages/http-routing:
     devDependencies:
       '@types/node':
@@ -37,6 +53,10 @@ importers:
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3))
 
   services/auction-service:
+    dependencies:
+      '@auction-bonanza/access-auth':
+        specifier: workspace:*
+        version: link:../../packages/access-auth
     devDependencies:
       '@types/node':
         specifier: 24.13.3
@@ -50,6 +70,9 @@ importers:
 
   services/identity-service:
     dependencies:
+      '@auction-bonanza/access-auth':
+        specifier: workspace:*
+        version: link:../../packages/access-auth
       '@auction-bonanza/http-routing':
         specifier: workspace:*
         version: link:../../packages/http-routing
@@ -59,6 +82,9 @@ importers:
       fastify:
         specifier: 5.6.2
         version: 5.6.2
+      jose:
+        specifier: 6.2.10
+        version: 6.2.10
       pg:
         specifier: 8.16.3
         version: 8.16.3
@@ -1002,6 +1028,9 @@ packages:
     resolution: {integrity: sha512-aq+t5NAc+cS6rZQQVWC2x98CPqGtKKTMDd4Gaodv0wShnItdKg/51djkGJ1hqH+Oy0ivDftCbSLCQob8zso01w==}
     engines: {node: '>= 10'}
 
+  jose@6.2.10:
+    resolution: {integrity: sha512-iiW7J9qRFlGxvCOIBDBDxFePQSn7ZMAnrYGhrrOo6siO/MIqwfyilLR27pkfDgUk+raLuzADS8A3S/KLBisc0g==}
+
   json-schema-ref-resolver@3.0.0:
     resolution: {integrity: sha512-hOrZIVL5jyYFjzk7+y7n5JDzGlU8rfWDuYyHwGa2WA8/pcmMHezp2xsVwxrebD/Q9t8Nc5DboieySDpCp4WG4A==}
 
@@ -1936,6 +1965,8 @@ snapshots:
     optional: true
 
   ipaddr.js@2.5.0: {}
+
+  jose@6.2.10: {}
 
   json-schema-ref-resolver@3.0.0:
     dependencies:

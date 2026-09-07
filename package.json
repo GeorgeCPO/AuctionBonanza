@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "build": "pnpm --recursive --if-present run build",
+    "auth:keys:local": "node scripts/generate-local-auth-keys.mjs",
     "db:dump": "dbmate --migrations-dir db/migrations --schema-file db/schema.sql dump",
     "db:migrate": "dbmate --migrations-dir db/migrations --no-dump-schema migrate && dbmate --migrations-dir db/migrations --schema-file db/schema.sql dump",
     "db:new": "dbmate --migrations-dir db/migrations new",

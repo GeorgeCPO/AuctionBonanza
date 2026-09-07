@@ -10,10 +10,27 @@ const config: IdentityApiDependencies["config"] = {
   host: "127.0.0.1",
   port: 3001,
   databaseUrl: "postgresql://test:test@localhost:5432/auction_db",
+  authIssuer: "https://identity.test",
+  authAudience: "auction-api",
+  accessTokenTtlSeconds: 600,
+  refreshSessionTtlSeconds: 2_592_000,
+  accessTokenClockSkewSeconds: 5,
+  signingAlgorithm: "ES256",
+  activeSigningKeyId: "test-key",
+  signingPrivateKeyPath: "/not-used/private.pem",
+  signingJwksPath: "/not-used/jwks.json",
 };
 
 const unusedPasswordSecurity = {
   hash: async (): Promise<string> => "unused",
+  verify: async (): Promise<boolean> => false,
+  verifyUnknownUser: async (): Promise<void> => undefined,
+};
+
+const unusedAccessTokens: IdentityApiDependencies["accessTokens"] = {
+  issue: async (): Promise<string> => "unused",
+  verify: async () => Promise.reject(new Error("unused")),
+  publicJwks: () => ({ keys: [] }),
 };
 
 afterEach(async () => {
@@ -23,14 +40,22 @@ afterEach(async () => {
 function makeDatabase(
   query: Database["query"] = vi.fn<Database["query"]>(async () => ({ rows: [] })),
 ): Database {
-  return { query };
+  return {
+    query,
+    connect: async () => Promise.reject(new Error("unexpected transaction")),
+  };
 }
 
 describe("identity service", () => {
   it("reports process health without querying PostgreSQL", async () => {
     const query = vi.fn<Database["query"]>(async () => ({ rows: [] }));
     const database = makeDatabase(query);
-    const app = buildApp({ config, database, passwordSecurity: unusedPasswordSecurity });
+    const app = buildApp({
+      config,
+      database,
+      passwordSecurity: unusedPasswordSecurity,
+      accessTokens: unusedAccessTokens,
+    });
     apps.push(app);
 
     const response = await app.inject({ method: "GET", url: "/health" });
@@ -43,7 +68,12 @@ describe("identity service", () => {
   it("reports readiness only when PostgreSQL responds", async () => {
     const query = vi.fn<Database["query"]>(async () => ({ rows: [{ "?column?": 1 }] }));
     const database = makeDatabase(query);
-    const app = buildApp({ config, database, passwordSecurity: unusedPasswordSecurity });
+    const app = buildApp({
+      config,
+      database,
+      passwordSecurity: unusedPasswordSecurity,
+      accessTokens: unusedAccessTokens,
+    });
     apps.push(app);
 
     const response = await app.inject({ method: "GET", url: "/ready" });
@@ -57,7 +87,12 @@ describe("identity service", () => {
     const database = makeDatabase(
       vi.fn<Database["query"]>(async () => Promise.reject(new Error("offline"))),
     );
-    const app = buildApp({ config, database, passwordSecurity: unusedPasswordSecurity });
+    const app = buildApp({
+      config,
+      database,
+      passwordSecurity: unusedPasswordSecurity,
+      accessTokens: unusedAccessTokens,
+    });
     apps.push(app);
 
     const response = await app.inject({ method: "GET", url: "/ready" });
@@ -83,7 +118,8 @@ describe("identity service", () => {
     const app = buildApp({
       config,
       database: makeDatabase(query),
-      passwordSecurity: { hash },
+      passwordSecurity: { ...unusedPasswordSecurity, hash },
+      accessTokens: unusedAccessTokens,
     });
     apps.push(app);
 
@@ -117,7 +153,12 @@ describe("identity service", () => {
     const query = vi.fn<Database["query"]>(async () => ({ rows: [] }));
     const database = makeDatabase(query);
     const hash = vi.fn<IdentityApiDependencies["passwordSecurity"]["hash"]>(async () => "unused");
-    const app = buildApp({ config, database, passwordSecurity: { hash } });
+    const app = buildApp({
+      config,
+      database,
+      passwordSecurity: { ...unusedPasswordSecurity, hash },
+      accessTokens: unusedAccessTokens,
+    });
     apps.push(app);
 
     const response = await app.inject({

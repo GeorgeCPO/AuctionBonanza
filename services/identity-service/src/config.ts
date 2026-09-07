@@ -13,6 +13,19 @@ const identityConfigSchema = Type.Object(
     databaseUrl: Type.String({
       pattern: "^postgres(?:ql)?://.+",
     }),
+    authIssuer: Type.String({ minLength: 1, pattern: "^https?://[^\\s]+$" }),
+    authAudience: Type.String({ minLength: 1, pattern: "^\\S+$" }),
+    accessTokenTtlSeconds: Type.Integer({ minimum: 60, maximum: 3_600 }),
+    refreshSessionTtlSeconds: Type.Integer({ minimum: 3_600, maximum: 5_184_000 }),
+    accessTokenClockSkewSeconds: Type.Integer({ minimum: 0, maximum: 60 }),
+    signingAlgorithm: Type.Literal("ES256"),
+    activeSigningKeyId: Type.String({
+      minLength: 1,
+      maxLength: 128,
+      pattern: "^[A-Za-z0-9._-]+$",
+    }),
+    signingPrivateKeyPath: Type.String({ minLength: 1 }),
+    signingJwksPath: Type.String({ minLength: 1 }),
   },
   { additionalProperties: false },
 );
@@ -27,6 +40,15 @@ export function parseIdentityConfig(
     host: environment.HOST ?? "0.0.0.0",
     port: Number(environment.PORT ?? "3001"),
     databaseUrl: environment.DATABASE_URL,
+    authIssuer: environment.AUTH_ISSUER ?? "http://localhost:3001",
+    authAudience: environment.AUTH_AUDIENCE ?? "auction-api",
+    accessTokenTtlSeconds: Number(environment.ACCESS_TOKEN_TTL_SECONDS ?? "600"),
+    refreshSessionTtlSeconds: Number(environment.REFRESH_SESSION_TTL_SECONDS ?? "2592000"),
+    accessTokenClockSkewSeconds: Number(environment.ACCESS_TOKEN_CLOCK_SKEW_SECONDS ?? "5"),
+    signingAlgorithm: environment.AUTH_SIGNING_ALGORITHM ?? "ES256",
+    activeSigningKeyId: environment.AUTH_ACTIVE_KEY_ID,
+    signingPrivateKeyPath: environment.AUTH_SIGNING_PRIVATE_KEY_PATH,
+    signingJwksPath: environment.AUTH_JWKS_PATH,
   };
 
   if (!Value.Check(identityConfigSchema, candidate)) {

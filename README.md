@@ -36,6 +36,7 @@ pnpm check
 docker compose up -d postgres
 cp .env.example .env
 pnpm db:migrate
+pnpm auth:keys:local local-2026-09
 ```
 
 Use `pnpm format` to apply repository formatting, `pnpm format:check` to verify
@@ -53,6 +54,9 @@ from the repository root. Migrate and rollback regenerate the committed
 `db/schema.sql` snapshot. See `db/migrations/README.md` for the workflow, naming,
 and schema decisions.
 
+PostgreSQL 18 uses the versioned `postgres18_data` Compose volume mounted at
+`/var/lib/postgresql`, matching the official image's persistent-storage layout.
+
 To exercise the identity service's runtime configuration loader:
 
 ```sh
@@ -63,3 +67,5 @@ pnpm --filter @auction-bonanza/identity-service start:local
 
 The process validates all configuration before service startup. The `.env` file
 is ignored by Git; `.env.example` is the committed local-development contract.
+Signing keys under `services/identity-service/.local-keys` are also ignored and
+are for local development only.

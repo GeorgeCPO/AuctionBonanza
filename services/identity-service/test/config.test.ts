@@ -7,6 +7,15 @@ const validEnvironment = {
   HOST: "127.0.0.1",
   PORT: "3101",
   DATABASE_URL: "postgresql://auction:auction_local@localhost:5432/auction_db",
+  AUTH_ISSUER: "https://identity.test",
+  AUTH_AUDIENCE: "auction-api",
+  ACCESS_TOKEN_TTL_SECONDS: "600",
+  REFRESH_SESSION_TTL_SECONDS: "2592000",
+  ACCESS_TOKEN_CLOCK_SKEW_SECONDS: "5",
+  AUTH_SIGNING_ALGORITHM: "ES256",
+  AUTH_ACTIVE_KEY_ID: "test-key",
+  AUTH_SIGNING_PRIVATE_KEY_PATH: "/keys/private.pem",
+  AUTH_JWKS_PATH: "/keys/jwks.json",
 };
 
 describe("parseIdentityConfig", () => {
@@ -16,11 +25,27 @@ describe("parseIdentityConfig", () => {
       host: "127.0.0.1",
       port: 3101,
       databaseUrl: "postgresql://auction:auction_local@localhost:5432/auction_db",
+      authIssuer: "https://identity.test",
+      authAudience: "auction-api",
+      accessTokenTtlSeconds: 600,
+      refreshSessionTtlSeconds: 2_592_000,
+      accessTokenClockSkewSeconds: 5,
+      signingAlgorithm: "ES256",
+      activeSigningKeyId: "test-key",
+      signingPrivateKeyPath: "/keys/private.pem",
+      signingJwksPath: "/keys/jwks.json",
     });
   });
 
   it("uses local-safe defaults for non-secret server settings", () => {
-    expect(parseIdentityConfig({ DATABASE_URL: validEnvironment.DATABASE_URL })).toMatchObject({
+    expect(
+      parseIdentityConfig({
+        DATABASE_URL: validEnvironment.DATABASE_URL,
+        AUTH_ACTIVE_KEY_ID: "test-key",
+        AUTH_SIGNING_PRIVATE_KEY_PATH: "/keys/private.pem",
+        AUTH_JWKS_PATH: "/keys/jwks.json",
+      }),
+    ).toMatchObject({
       nodeEnv: "development",
       host: "0.0.0.0",
       port: 3001,
@@ -51,4 +76,25 @@ describe("parseIdentityConfig", () => {
       }),
     ).toThrow("Invalid identity-service configuration");
   });
+
+  it.each([
+    ["ACCESS_TOKEN_TTL_SECONDS", "59"],
+    ["ACCESS_TOKEN_CLOCK_SKEW_SECONDS", "61"],
+    ["REFRESH_SESSION_TTL_SECONDS", "3599"],
+    ["AUTH_SIGNING_ALGORITHM", "HS256"],
+    ["AUTH_ISSUER", "not-a-uri"],
+  ])("rejects invalid authentication setting %s", (name, value) => {
+    expect(() => parseIdentityConfig({ ...validEnvironment, [name]: value })).toThrow(
+      "Invalid identity-service configuration",
+    );
+  });
+
+  it.each(["AUTH_ACTIVE_KEY_ID", "AUTH_SIGNING_PRIVATE_KEY_PATH", "AUTH_JWKS_PATH"])(
+    "requires signing configuration %s",
+    (name) => {
+      expect(() => parseIdentityConfig({ ...validEnvironment, [name]: undefined })).toThrow(
+        "Invalid identity-service configuration",
+      );
+    },
+  );
 });

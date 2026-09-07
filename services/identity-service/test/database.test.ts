@@ -8,6 +8,15 @@ const config: IdentityConfig = {
   host: "127.0.0.1",
   port: 3001,
   databaseUrl: "postgresql://test:test@localhost:5432/auction_db",
+  authIssuer: "https://identity.test",
+  authAudience: "auction-api",
+  accessTokenTtlSeconds: 600,
+  refreshSessionTtlSeconds: 2_592_000,
+  accessTokenClockSkewSeconds: 5,
+  signingAlgorithm: "ES256",
+  activeSigningKeyId: "test-key",
+  signingPrivateKeyPath: "/not-used/private.pem",
+  signingJwksPath: "/not-used/jwks.json",
 };
 
 afterEach(() => {

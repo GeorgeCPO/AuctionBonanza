@@ -54,3 +54,23 @@ Dbmate applies each migration in a transaction by default and records completed
 versions in `schema_migrations`. Review both the migration and the resulting
 generated `schema.sql` diff: the migration explains how the change happens, and
 the snapshot shows the complete schema after it happens.
+
+The identity refresh-session migration is owned by `identity-service` and adds:
+
+- `identity_sessions`, with an absolute database-timestamp expiry, revocation
+  state, timestamp-order checks, a user foreign key, and indexes for user lookup,
+  expiry cleanup, and revoked-session cleanup;
+- `identity_refresh_tokens`, with one 32-byte SHA-256 digest per unique token,
+  unique generation numbers within a session, a single replacement child for
+  each retained parent, timestamp checks, and a cascading session foreign key.
+  The `(session_id, generation)` uniqueness index also supports family lookup;
+- a digest uniqueness constraint that also supplies the indexed refresh lookup
+  used under `FOR UPDATE` during rotation.
+
+Identity owns all writes to these tables. Expired or sufficiently old revoked
+sessions can be deleted in bounded batches; token history cascades only when its
+parent session is deleted. Current and consumed token generations must remain
+available while a session family is relevant so replay can be detected.
+
+The PostgreSQL 18 Docker image uses the `postgres18_data` Compose volume mounted
+at `/var/lib/postgresql` for persistent storage.

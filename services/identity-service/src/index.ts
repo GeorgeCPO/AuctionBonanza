@@ -2,12 +2,14 @@ import { buildApp } from "./app.js";
 import { loadIdentityConfig } from "./config.js";
 import { createDatabasePool } from "./database.js";
 import { PasswordSecurity } from "./security/password-security.js";
+import { createAccessTokens } from "./security/access-tokens.js";
 
 if (import.meta.main) {
   const config = loadIdentityConfig();
   const database = createDatabasePool(config);
   const passwordSecurity = new PasswordSecurity();
-  const app = buildApp({ config, database, passwordSecurity });
+  const accessTokens = await createAccessTokens(config);
+  const app = buildApp({ config, database, passwordSecurity, accessTokens });
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     app.log.info({ signal }, "shutting down");

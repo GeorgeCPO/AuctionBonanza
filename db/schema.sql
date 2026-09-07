@@ -50,6 +50,43 @@ ALTER TABLE public.auctions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
 
 
 --
+-- Name: identity_refresh_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_refresh_tokens (
+    id uuid NOT NULL,
+    session_id uuid NOT NULL,
+    parent_token_id uuid,
+    generation integer NOT NULL,
+    token_digest bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    consumed_at timestamp with time zone,
+    CONSTRAINT identity_refresh_tokens_consumed_after_creation_check CHECK (((consumed_at IS NULL) OR (consumed_at >= created_at))),
+    CONSTRAINT identity_refresh_tokens_digest_length_check CHECK ((octet_length(token_digest) = 32)),
+    CONSTRAINT identity_refresh_tokens_generation_check CHECK ((generation >= 0))
+);
+
+
+--
+-- Name: identity_sessions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_sessions (
+    id uuid NOT NULL,
+    user_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    last_refreshed_at timestamp with time zone DEFAULT now() NOT NULL,
+    revoked_at timestamp with time zone,
+    revocation_reason character varying(100),
+    CONSTRAINT identity_sessions_expiry_check CHECK ((expires_at > created_at)),
+    CONSTRAINT identity_sessions_last_refreshed_check CHECK (((last_refreshed_at >= created_at) AND (last_refreshed_at <= expires_at))),
+    CONSTRAINT identity_sessions_revocation_check CHECK ((((revoked_at IS NULL) AND (revocation_reason IS NULL)) OR ((revoked_at IS NOT NULL) AND (revocation_reason IS NOT NULL)))),
+    CONSTRAINT identity_sessions_revoked_after_creation_check CHECK (((revoked_at IS NULL) OR (revoked_at >= created_at)))
+);
+
+
+--
 -- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -94,6 +131,38 @@ ALTER TABLE ONLY public.auctions
 
 
 --
+-- Name: identity_refresh_tokens identity_refresh_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_refresh_tokens
+    ADD CONSTRAINT identity_refresh_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: identity_refresh_tokens identity_refresh_tokens_session_generation_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_refresh_tokens
+    ADD CONSTRAINT identity_refresh_tokens_session_generation_key UNIQUE (session_id, generation);
+
+
+--
+-- Name: identity_refresh_tokens identity_refresh_tokens_token_digest_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_refresh_tokens
+    ADD CONSTRAINT identity_refresh_tokens_token_digest_key UNIQUE (token_digest);
+
+
+--
+-- Name: identity_sessions identity_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_sessions
+    ADD CONSTRAINT identity_sessions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -124,6 +193,41 @@ CREATE INDEX auctions_owner_id_idx ON public.auctions USING btree (owner_id);
 
 
 --
+-- Name: identity_refresh_tokens_consumed_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX identity_refresh_tokens_consumed_at_idx ON public.identity_refresh_tokens USING btree (consumed_at) WHERE (consumed_at IS NOT NULL);
+
+
+--
+-- Name: identity_refresh_tokens_parent_token_id_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX identity_refresh_tokens_parent_token_id_key ON public.identity_refresh_tokens USING btree (parent_token_id) WHERE (parent_token_id IS NOT NULL);
+
+
+--
+-- Name: identity_sessions_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX identity_sessions_expiry_idx ON public.identity_sessions USING btree (expires_at);
+
+
+--
+-- Name: identity_sessions_revoked_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX identity_sessions_revoked_at_idx ON public.identity_sessions USING btree (revoked_at) WHERE (revoked_at IS NOT NULL);
+
+
+--
+-- Name: identity_sessions_user_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX identity_sessions_user_id_idx ON public.identity_sessions USING btree (user_id);
+
+
+--
 -- Name: users_email_case_insensitive_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -139,6 +243,30 @@ ALTER TABLE ONLY public.auctions
 
 
 --
+-- Name: identity_refresh_tokens identity_refresh_tokens_parent_token_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_refresh_tokens
+    ADD CONSTRAINT identity_refresh_tokens_parent_token_id_fkey FOREIGN KEY (parent_token_id) REFERENCES public.identity_refresh_tokens(id);
+
+
+--
+-- Name: identity_refresh_tokens identity_refresh_tokens_session_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_refresh_tokens
+    ADD CONSTRAINT identity_refresh_tokens_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.identity_sessions(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_sessions identity_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_sessions
+    ADD CONSTRAINT identity_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
 -- PostgreSQL database dump complete
 --
 
@@ -151,4 +279,5 @@ ALTER TABLE ONLY public.auctions
 
 INSERT INTO public.schema_migrations (version) VALUES
     ('20260902193000'),
-    ('20260902193100');
+    ('20260902193100'),
+    ('20260903170000');
