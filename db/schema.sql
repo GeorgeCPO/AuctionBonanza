@@ -26,12 +26,29 @@ SET default_table_access_method = heap;
 CREATE TABLE public.auctions (
     id bigint NOT NULL,
     owner_id bigint NOT NULL,
-    start_date timestamp with time zone NOT NULL,
-    end_date timestamp with time zone NOT NULL,
-    starting_price bigint NOT NULL,
-    auction_item_description character varying NOT NULL,
+    starts_at timestamp with time zone NOT NULL,
+    ends_at timestamp with time zone NOT NULL,
+    starting_price_minor bigint NOT NULL,
+    description text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT auctions_dates_check CHECK ((end_date > start_date))
+    title character varying(160) NOT NULL,
+    currency_code character varying(3) NOT NULL,
+    minimum_bid_increment_minor bigint NOT NULL,
+    version bigint DEFAULT 1 NOT NULL,
+    cancelled_at timestamp with time zone,
+    closed_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT auctions_closed_at_check CHECK (((closed_at IS NULL) OR (closed_at >= ends_at))),
+    CONSTRAINT auctions_currency_code_check CHECK (((currency_code)::text ~ '^[A-Z]{3}$'::text)),
+    CONSTRAINT auctions_description_check CHECK (((description = btrim(description)) AND ((char_length(description) >= 1) AND (char_length(description) <= 10000)))),
+    CONSTRAINT auctions_duration_check CHECK (((ends_at <= starts_at) OR (((ends_at - starts_at) >= '00:01:00'::interval) AND ((ends_at - starts_at) <= '30 days'::interval)))),
+    CONSTRAINT auctions_minimum_bid_increment_minor_check CHECK ((minimum_bid_increment_minor > 0)),
+    CONSTRAINT auctions_schedule_check CHECK ((ends_at > starts_at)),
+    CONSTRAINT auctions_starting_price_minor_check CHECK ((starting_price_minor >= 0)),
+    CONSTRAINT auctions_terminal_state_check CHECK (((cancelled_at IS NULL) OR (closed_at IS NULL))),
+    CONSTRAINT auctions_title_check CHECK ((((title)::text = btrim((title)::text)) AND ((char_length((title)::text) >= 1) AND (char_length((title)::text) <= 160)))),
+    CONSTRAINT auctions_updated_at_check CHECK ((updated_at >= created_at)),
+    CONSTRAINT auctions_version_check CHECK ((version >= 1))
 );
 
 
@@ -179,17 +196,17 @@ ALTER TABLE ONLY public.users
 
 
 --
--- Name: auctions_end_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX auctions_end_date_idx ON public.auctions USING btree (end_date);
-
-
---
 -- Name: auctions_owner_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX auctions_owner_id_idx ON public.auctions USING btree (owner_id);
+
+
+--
+-- Name: auctions_pending_finalization_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auctions_pending_finalization_idx ON public.auctions USING btree (ends_at, id) WHERE ((cancelled_at IS NULL) AND (closed_at IS NULL));
 
 
 --
@@ -280,4 +297,5 @@ ALTER TABLE ONLY public.identity_sessions
 INSERT INTO public.schema_migrations (version) VALUES
     ('20260902193000'),
     ('20260902193100'),
-    ('20260903170000');
+    ('20260903170000'),
+    ('20260907120000');
