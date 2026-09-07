@@ -23,6 +23,7 @@
 - State important assumptions and explain meaningful architecture tradeoffs.
 - Prefer explicit behavior over hidden framework magic, especially around transactions, retries, ordering, and failure recovery.
 - Record durable architectural decisions in project documentation when they become concrete.
+- Place private methods at the end of a class, after its public methods.
 
 ## Correctness principles
 

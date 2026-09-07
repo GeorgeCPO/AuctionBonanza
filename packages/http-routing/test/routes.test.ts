@@ -53,4 +53,25 @@ describe("registerApi", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ userId: "42", bidId: "99" });
   });
+
+  it("registers route-level pre-handler hooks", async () => {
+    const app = Fastify();
+    apps.push(app);
+
+    registerApi(app, {
+      v1: {
+        auctions: {
+          post: {
+            preHandler: async (_request, reply) => reply.code(401).send({ code: "UNAUTHORIZED" }),
+            handler: async () => ({ created: true }),
+          },
+        },
+      },
+    });
+
+    const response = await app.inject({ method: "POST", url: "/v1/auctions" });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ code: "UNAUTHORIZED" });
+  });
 });

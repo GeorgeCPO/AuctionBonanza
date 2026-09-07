@@ -34,12 +34,15 @@ even though `closed_at` has not been written yet.
   JSON boundary as decimal strings. Starting price may be zero; minimum bid
   increment must be positive.
 - Auction duration is inclusive at the one-minute and thirty-day limits.
-- A missing `starts_at` uses database time. A supplied value must not be in the
-  past; that is checked in the creation transaction because current-time checks
-  do not belong in a PostgreSQL `CHECK` constraint.
-- Creation will require an idempotency key. Request-key persistence and payload
-  comparison will be introduced with the create-auction use case rather than
-  embedded in the auction row.
+- A missing `starts_at` uses database time. For this phase, supplied start times
+  in the past are accepted, including schedules that have already ended. The
+  database still enforces schedule ordering and duration.
+- Creation idempotency is deferred. No request key is required or stored, and
+  repeated submissions can create separate auctions. Clients should avoid
+  automatically retrying creation when the outcome is unknown.
+- Creation uses one atomic `INSERT ... RETURNING` statement to save and return
+  the auction. Database constraints enforce schedule ordering and duration.
+  Reads and creation return a database timestamp used to derive the phase.
 
 The reshape migration backfills pre-contract rows with a title derived from the
 description, `USD` as a migration-only currency decision, a one-minor-unit bid
