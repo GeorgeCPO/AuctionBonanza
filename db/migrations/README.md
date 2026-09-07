@@ -50,6 +50,19 @@ conventions. It also:
   intentionally left to a later business rule because the source model only
   requires a value.
 
+The auction reshape migration turns that seed table into the initial lifecycle
+aggregate. It adds bounded, trimmed presentation fields; an explicit currency
+representation; non-negative starting-price and positive-increment checks; a
+one-minute to thirty-day duration; aggregate versioning; persisted cancellation
+and closure facts; and timestamp-order constraints. Scheduled, open, and
+awaiting-finalization remain derived phases, as documented in
+[`../../docs/AUCTION_LIFECYCLE.md`](../../docs/AUCTION_LIFECYCLE.md).
+
+Existing rows predate required title, currency, and bid-increment fields. The
+migration derives their title from the description and backfills `USD`, a
+one-minor-unit increment, version 1, and `updated_at = created_at`. Those
+migration-only values are not column defaults for new auction creation.
+
 Dbmate applies each migration in a transaction by default and records completed
 versions in `schema_migrations`. Review both the migration and the resulting
 generated `schema.sql` diff: the migration explains how the change happens, and

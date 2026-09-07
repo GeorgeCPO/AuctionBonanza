@@ -7,6 +7,9 @@ Its initial responsibility is auction lifecycle management and synchronous bid a
 The current entry point is intentionally minimal. Domain behavior and runtime
 configuration will be added in later milestones.
 
+The initial creation rules, derived phases, terminal facts, and time-sensitive
+transaction rules are recorded in [`../../docs/AUCTION_LIFECYCLE.md`](../../docs/AUCTION_LIFECYCLE.md).
+
 `src/authentication.ts` wires the narrow shared access-token verifier to a
 bounded remote-JWKS cache. Once real HTTP business routes are introduced, their
 Fastify authentication hook can parse the bearer header and attach the returned
