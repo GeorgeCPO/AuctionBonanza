@@ -112,3 +112,37 @@ Start with versioned JSON event schemas in `packages/contracts`. A schema regist
 - A monorepo task runner beyond workspace scripts
 
 These are not prohibited. They should be introduced when a concrete milestone creates a reason to evaluate them.
+
+## Authentication and availability
+
+Identity signs minimal 10-minute access JWTs with ES256 and publishes public
+keys as JWKS. Backend services use the narrow `packages/access-auth` verifier,
+pin algorithm/type/issuer/audience and claims, and cache at most eight public
+keys for a configured TTL. A normal request with a known cached key performs no
+identity-service or database call. An unknown `kid` refreshes JWKS, enabling old
+and new keys to overlap during rotation.
+
+Opaque 256-bit refresh credentials go only to identity. PostgreSQL stores their
+SHA-256 digests in retained, linked generations beneath a stable refresh
+session. Rotation is a single explicit transaction: lock token and session,
+validate against database time, consume, insert replacement, update session,
+commit, then acknowledge over HTTP. Reuse of a consumed generation revokes the
+entire family. Kafka and Redis are not involved.
+
+| Failure or transition                                    | Behavior                                                                                              |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Identity unavailable; backend has token/fresh cached key | Backend verification continues locally.                                                               |
+| Identity unavailable during login or refresh             | Operation fails; no backend fallback creates credentials.                                             |
+| PostgreSQL fails before refresh commit                   | Transaction rolls back; the old refresh token remains current.                                        |
+| Refresh commits but HTTP response is lost                | Retrying the old token looks like replay, revokes the family, and requires login.                     |
+| Same refresh token submitted concurrently                | Row locks serialize uses; one may succeed, the other detects replay and revokes the family.           |
+| Rotated refresh token replayed                           | Entire session family is revoked; caller receives only a generic `401`.                               |
+| User logs out with a still-valid access token            | Refresh stops immediately; access remains valid for at most 10 minutes plus 5 seconds skew.           |
+| Signing key rotates while old access tokens remain valid | JWKS publishes both keys until old token lifetime, skew, and cache propagation have elapsed.          |
+| Service cold-starts without JWKS while identity is down  | Authentication fails closed until JWKS can be retrieved (or a future secure bootstrap is configured). |
+| Service receives a token for another audience            | Strict verification rejects it with `401`.                                                            |
+
+Access tokens represent initiating-user context only. They are not credentials
+for the authenticated calling service. Future internal authentication may use
+mTLS, workload credentials, or token exchange, and must preserve that
+distinction without trusting client-set internal headers.

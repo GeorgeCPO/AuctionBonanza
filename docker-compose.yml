@@ -14,7 +14,9 @@ services:
       retries: 10
       start_period: 5s
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PostgreSQL 18 stores PGDATA below a major-version-specific directory.
+      # Mount the parent directory as required by the official image.
+      - postgres18_data:/var/lib/postgresql
 
 volumes:
-  postgres_data:
+  postgres18_data:

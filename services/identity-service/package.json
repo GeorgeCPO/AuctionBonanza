@@ -4,16 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @auction-bonanza/http-routing build && tsc -p tsconfig.build.json",
+    "build": "pnpm --filter @auction-bonanza/http-routing build && pnpm --filter @auction-bonanza/access-auth build && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "start:local": "node --env-file-if-exists=.env dist/index.js",
-    "test": "vitest run",
+    "test": "pnpm --filter @auction-bonanza/access-auth build && vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@auction-bonanza/access-auth": "workspace:*",
     "@auction-bonanza/http-routing": "workspace:*",
     "@sinclair/typebox": "0.34.52",
     "fastify": "5.6.2",
+    "jose": "6.2.10",
     "pg": "8.16.3"
   },
   "devDependencies": {
