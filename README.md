@@ -69,3 +69,13 @@ The process validates all configuration before service startup. The `.env` file
 is ignored by Git; `.env.example` is the committed local-development contract.
 Signing keys under `services/identity-service/.local-keys` are also ignored and
 are for local development only.
+
+The auction service uses the identity service's public JWKS and the same access
+token issuer/audience. To run it after applying migrations and starting
+identity:
+
+```sh
+cp services/auction-service/.env.example services/auction-service/.env
+pnpm --filter @auction-bonanza/auction-service build
+pnpm --filter @auction-bonanza/auction-service start:local
+```

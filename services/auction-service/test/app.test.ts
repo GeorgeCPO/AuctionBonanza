@@ -1,0 +1,181 @@
+import type { AuthenticatedPrincipal } from "@auction-bonanza/access-auth";
+import type { preHandlerAsyncHookHandler } from "fastify";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { buildApp } from "../src/app.js";
+import type { Auction } from "../src/auctions/auction.js";
+import type { AuctionServicePort } from "../src/auctions/auction.service.js";
+import type { AuctionConfig } from "../src/config.js";
+import type { Database } from "../src/database.js";
+
+const apps: ReturnType<typeof buildApp>[] = [];
+const config: AuctionConfig = {
+  nodeEnv: "test",
+  host: "127.0.0.1",
+  port: 3002,
+  databaseUrl: "postgresql://test:test@localhost:5432/auction_db",
+  authIssuer: "https://identity.test",
+  authAudience: "auction-api",
+  accessTokenTtlSeconds: 600,
+  accessTokenClockSkewSeconds: 5,
+  authJwksUrl: "https://identity.test/.well-known/jwks.json",
+  authJwksCacheTtlMilliseconds: 300_000,
+  supportedCurrencyCodes: ["USD"],
+};
+const principal: AuthenticatedPrincipal = {
+  userId: "42",
+  sessionId: "session-1",
+  tokenId: "token-1",
+};
+const auction: Auction = {
+  id: "91",
+  ownerId: "42",
+  title: "Vintage clock",
+  description: "A mechanical clock.",
+  currencyCode: "USD",
+  startsAt: new Date("2030-01-01T10:00:00.000Z"),
+  endsAt: new Date("2030-01-01T11:00:00.000Z"),
+  startingPriceMinor: "1000",
+  minimumBidIncrementMinor: "100",
+  version: "1",
+  cancelledAt: null,
+  closedAt: null,
+  createdAt: new Date("2029-12-01T10:00:00.000Z"),
+  updatedAt: new Date("2029-12-01T10:00:00.000Z"),
+  phase: "scheduled",
+};
+const validPayload = {
+  title: "Vintage clock",
+  description: "A mechanical clock.",
+  currencyCode: "USD",
+  startsAt: "2030-01-01T10:00:00.000Z",
+  endsAt: "2030-01-01T11:00:00.000Z",
+  startingPriceMinor: "1000",
+  minimumBidIncrementMinor: "100",
+};
+
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map(async (app) => app.close()));
+});
+
+function makeDatabase(): Database {
+  return {
+    query: vi.fn<Database["query"]>(async () => ({ rows: [] })),
+    connect: vi.fn<Database["connect"]>(async () =>
+      Promise.reject(new Error("unexpected transaction")),
+    ),
+  };
+}
+
+function makeAuctions(overrides: Partial<AuctionServicePort> = {}): AuctionServicePort {
+  return {
+    create: vi.fn<AuctionServicePort["create"]>(async () => ({ kind: "created", auction })),
+    findById: vi.fn<AuctionServicePort["findById"]>(async () => auction),
+    ...overrides,
+  };
+}
+
+const authenticate: preHandlerAsyncHookHandler = async (request) => {
+  request.auctionPrincipal = principal;
+};
+
+function makeApp(auctions: AuctionServicePort, authentication = authenticate) {
+  const app = buildApp({
+    config,
+    database: makeDatabase(),
+    auctions,
+    authenticate: authentication,
+  });
+  apps.push(app);
+  return app;
+}
+
+describe("auction HTTP API", () => {
+  it("creates an owner-authenticated auction and identifies its resource", async () => {
+    const create = vi.fn<AuctionServicePort["create"]>(async () => ({ kind: "created", auction }));
+    const auctions = makeAuctions({ create });
+    const app = makeApp(auctions);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/auctions",
+      headers: { authorization: "Bearer access-token" },
+      payload: validPayload,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers.location).toBe("/v1/auctions/91");
+    expect(response.json()).toMatchObject({
+      id: "91",
+      ownerId: "42",
+      startingPriceMinor: "1000",
+      phase: "scheduled",
+    });
+    expect(create).toHaveBeenCalledWith("42", validPayload);
+  });
+
+  it("rejects creation when authentication fails", async () => {
+    const create = vi.fn<AuctionServicePort["create"]>(async () => ({ kind: "created", auction }));
+    const auctions = makeAuctions({ create });
+    const deny: preHandlerAsyncHookHandler = async (_request, reply) =>
+      reply.code(401).send({ code: "UNAUTHORIZED", message: "Authentication is required" });
+    const app = makeApp(auctions, deny);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/auctions",
+      payload: validPayload,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("rejects client-selected ownership", async () => {
+    const create = vi.fn<AuctionServicePort["create"]>(async () => ({ kind: "created", auction }));
+    const app = makeApp(makeAuctions({ create }));
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/auctions",
+      payload: { ...validPayload, ownerId: "99" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("returns auction details with the repository-derived phase without authentication", async () => {
+    const findById = vi.fn<AuctionServicePort["findById"]>(async () => auction);
+    const auctions = makeAuctions({ findById });
+    const app = makeApp(auctions);
+
+    const response = await app.inject({ method: "GET", url: "/v1/auctions/91" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      ...auction,
+      startsAt: "2030-01-01T10:00:00.000Z",
+      endsAt: "2030-01-01T11:00:00.000Z",
+      cancelledAt: null,
+      closedAt: null,
+      createdAt: "2029-12-01T10:00:00.000Z",
+      updatedAt: "2029-12-01T10:00:00.000Z",
+    });
+    expect(findById).toHaveBeenCalledWith("91");
+  });
+
+  it("returns 404 for an unknown auction", async () => {
+    const app = makeApp(
+      makeAuctions({
+        findById: vi.fn<AuctionServicePort["findById"]>(async () => undefined),
+      }),
+    );
+
+    const response = await app.inject({ method: "GET", url: "/v1/auctions/91" });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      code: "AUCTION_NOT_FOUND",
+      message: "Auction was not found",
+    });
+  });
+});

@@ -1,4 +1,9 @@
-import type { FastifyInstance, FastifySchema, RouteHandlerMethod } from "fastify";
+import type {
+  FastifyInstance,
+  FastifySchema,
+  preHandlerAsyncHookHandler,
+  RouteHandlerMethod,
+} from "fastify";
 
 const httpMethods = {
   delete: "DELETE",
@@ -14,6 +19,7 @@ type ApiMethod = keyof typeof httpMethods;
 
 export interface ApiRoute {
   handler: RouteHandlerMethod;
+  preHandler?: preHandlerAsyncHookHandler | preHandlerAsyncHookHandler[];
   schema?: FastifySchema;
 }
 
@@ -44,6 +50,8 @@ function registerBranch(app: FastifyInstance, branch: ApiTree, segments: string[
         method: httpMethods[key],
         url: `/${segments.join("/")}`,
         handler: route.handler,
+        // oxlint-disable-next-line typescript/no-misused-promises -- Fastify supports async hooks; its route type selects between callback and async signatures.
+        ...(route.preHandler === undefined ? {} : { preHandler: route.preHandler }),
         ...(route.schema === undefined ? {} : { schema: route.schema }),
       });
       continue;
