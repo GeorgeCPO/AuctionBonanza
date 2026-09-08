@@ -3,13 +3,22 @@ import type { ApiRoute } from "@auction-bonanza/http-routing";
 
 import type { AuctionApiDependencies } from "../api/dependencies.js";
 import { authenticatedRoute } from "../api/authenticated-route.js";
-import { isPostgresBigintId, type CreateAuctionInput } from "./auction.service.js";
+import {
+  isPostgresBigintId,
+  MAX_AUCTION_LIST_CURSOR_LENGTH,
+  type CreateAuctionInput,
+  type ListAuctionsInput,
+} from "./auction.service.js";
 import { toAuctionJson } from "./auction.js";
+
+// A title longer than this is rejected at creation, so no search term beyond
+// it could ever match one.
+const AUCTION_TITLE_MAX_LENGTH = 512;
 
 const timestampSchema = Type.String({ format: "date-time", maxLength: 35 });
 const creationBodySchema = Type.Object(
   {
-    title: Type.String({ minLength: 1, maxLength: 512, pattern: "\\S" }),
+    title: Type.String({ minLength: 1, maxLength: AUCTION_TITLE_MAX_LENGTH, pattern: "\\S" }),
     description: Type.String({ minLength: 1, maxLength: 10_240, pattern: "\\S" }),
     currencyCode: Type.String({ pattern: "^[A-Z]{3}$" }),
     startsAt: Type.Optional(timestampSchema),
@@ -22,6 +31,15 @@ const creationBodySchema = Type.Object(
 
 const auctionIdParamsSchema = Type.Object(
   { id: Type.String({ pattern: "^[1-9][0-9]{0,18}$" }) },
+  { additionalProperties: false },
+);
+
+const auctionListQuerySchema = Type.Object(
+  {
+    search: Type.Optional(Type.String({ maxLength: AUCTION_TITLE_MAX_LENGTH })),
+    limit: Type.Optional(Type.String({ maxLength: 3 })),
+    cursor: Type.Optional(Type.String({ maxLength: MAX_AUCTION_LIST_CURSOR_LENGTH })),
+  },
   { additionalProperties: false },
 );
 
@@ -68,6 +86,26 @@ export class AuctionController {
           });
         }
         return toAuctionJson(auction);
+      },
+    } satisfies ApiRoute;
+  }
+
+  get list(): ApiRoute {
+    return {
+      schema: { querystring: auctionListQuerySchema },
+      handler: async (request, reply) => {
+        const outcome = await this.dependencies.auctions.list(request.query as ListAuctionsInput);
+        if (outcome.kind === "invalid") {
+          return reply.code(400).send({
+            code: "INVALID_REQUEST",
+            message: "Request validation failed",
+          });
+        }
+
+        return {
+          items: outcome.page.items.map(toAuctionJson),
+          nextCursor: outcome.page.nextCursor,
+        };
       },
     } satisfies ApiRoute;
   }

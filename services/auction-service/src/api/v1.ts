@@ -9,6 +9,7 @@ export function createV1Api(dependencies: AuctionApiDependencies): ApiTree {
   return {
     v1: {
       auctions: {
+        get: auctions.list,
         post: auctions.create,
         ":id": {
           get: auctions.findById,

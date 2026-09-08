@@ -7,6 +7,8 @@ Its initial responsibility is auction lifecycle management and synchronous bid a
 The service currently exposes:
 
 - `POST /v1/auctions`, authenticated with an identity-service access token.
+- `GET /v1/auctions`, a public newest-first listing with optional title search
+  and cursor pagination.
 - `GET /v1/auctions/:id`, a public resource read whose `phase` is derived using
   the PostgreSQL clock.
 - `GET /health` and `GET /ready` process and PostgreSQL health checks.
@@ -15,6 +17,32 @@ Money is represented as decimal minor-unit strings at the JSON boundary.
 Creation idempotency is deferred: no idempotency key is required, and retrying a
 request may create another auction. Clients should avoid automatic creation
 retries when the outcome is unknown.
+
+`GET /v1/auctions` accepts an optional `search` query parameter. It trims the
+term and performs case-insensitive substring matching on titles; an empty term
+lists all auctions. The literal characters `%` and `_` have no wildcard
+meaning. No other filters are currently supported.
+
+Listings are ordered by `created_at DESC, id DESC`. `limit` defaults to 20 and
+must be an integer from 1 through 100. Pass the opaque `nextCursor` returned by
+one response as `cursor` to read the next page, keeping the same `search` term.
+Each response is `{ items, nextCursor }`: items use the same shape as the detail
+endpoint, including phases derived using database time. IDs remain decimal
+strings. The cursor retains PostgreSQL's microsecond timestamp precision even
+though response timestamps use the existing millisecond ISO format; clients
+must use the returned cursor rather than reconstructing it from an item.
+
+The query fetches `limit + 1` rows and returns at most `limit` items. A `null` cursor means the
+unchanged result set has been exhausted. Cursor pagination avoids duplicates
+and omissions while traversing an unchanged dataset; like other keyset
+pagination, concurrent inserts can change what a fresh traversal contains.
+Pages are separate reads, not a shared snapshot: updates and deletions can also
+change membership, and phases can advance between requests. Invalid limits or
+malformed cursors return HTTP 400 with `code: "INVALID_REQUEST"`. Unknown query
+parameters and repeated parameters are also rejected.
+
+For example, request `/v1/auctions?search=clock&limit=20`, then request
+`/v1/auctions?search=clock&limit=20&cursor=<nextCursor>` until `nextCursor` is null.
 
 The initial creation rules, derived phases, terminal facts, and time-sensitive
 transaction rules are recorded in [`../../docs/AUCTION_LIFECYCLE.md`](../../docs/AUCTION_LIFECYCLE.md).
