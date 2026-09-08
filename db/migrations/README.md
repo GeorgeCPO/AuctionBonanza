@@ -58,6 +58,12 @@ and closure facts; and timestamp-order constraints. Scheduled, open, and
 awaiting-finalization remain derived phases, as documented in
 [`../../docs/AUCTION_LIFECYCLE.md`](../../docs/AUCTION_LIFECYCLE.md).
 
+The auction listing index orders `created_at` and the `id` tie-breaker together,
+matching the public auction keyset query. Title substring search deliberately
+uses no additional index yet: a normal B-tree cannot support an unanchored,
+case-insensitive substring efficiently, and introducing trigram or full-text
+search infrastructure is deferred until search workload justifies it.
+
 Existing rows predate required title, currency, and bid-increment fields. The
 migration derives their title from the description and backfills `USD`, a
 one-minor-unit increment, version 1, and `updated_at = created_at`. Those
