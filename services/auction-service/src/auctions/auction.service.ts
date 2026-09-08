@@ -1,7 +1,14 @@
 import type { Auction } from "./auction.js";
-import type { AuctionRepository } from "./auction.repository.js";
+import type { AuctionListCursor, AuctionRepository } from "./auction.repository.js";
 
 const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
+const DEFAULT_AUCTION_LIST_LIMIT = 20;
+const MAX_AUCTION_LIST_LIMIT = 100;
+const CURSOR_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+
+// Shared with the controller's querystring schema so a cursor too long to be
+// valid is rejected at the HTTP boundary instead of reaching this parser.
+export const MAX_AUCTION_LIST_CURSOR_LENGTH = 256;
 
 export interface CreateAuctionInput {
   title: string;
@@ -17,9 +24,25 @@ export type CreateAuctionOutcome =
   | { kind: "created"; auction: Auction }
   | { kind: "invalid"; message: string };
 
+export interface ListAuctionsInput {
+  search?: string;
+  limit?: string;
+  cursor?: string | undefined;
+}
+
+export interface AuctionPage {
+  items: Auction[];
+  nextCursor: string | null;
+}
+
+export type ListAuctionsOutcome =
+  | { kind: "found"; page: AuctionPage }
+  | { kind: "invalid"; message: string };
+
 export interface AuctionServicePort {
   create(ownerId: string, input: CreateAuctionInput): Promise<CreateAuctionOutcome>;
   findById(id: string): Promise<Auction | undefined>;
+  list(input: ListAuctionsInput): Promise<ListAuctionsOutcome>;
 }
 
 function characterLength(value: string): number {
@@ -37,6 +60,11 @@ function parseTimestamp(value: string): Date | undefined {
   const timestamp = new Date(value);
   return Number.isNaN(timestamp.getTime()) ? undefined : timestamp;
 }
+
+type CursorParseResult =
+  | { kind: "absent" }
+  | { kind: "invalid" }
+  | { kind: "present"; cursor: AuctionListCursor };
 
 export class AuctionService implements AuctionServicePort {
   readonly #supportedCurrencyCodes: ReadonlySet<string>;
@@ -107,9 +135,85 @@ export class AuctionService implements AuctionServicePort {
   findById(id: string): Promise<Auction | undefined> {
     return this.repository.findById(id);
   }
+
+  async list(input: ListAuctionsInput): Promise<ListAuctionsOutcome> {
+    const limit = this.parseLimit(input.limit);
+    if (limit === undefined) {
+      return { kind: "invalid", message: "limit must be an integer between 1 and 100" };
+    }
+
+    const parsedCursor = this.parseCursor(input.cursor);
+    if (parsedCursor.kind === "invalid") {
+      return { kind: "invalid", message: "cursor is invalid" };
+    }
+
+    const search = input.search?.trim();
+    const entries = await this.repository.list({
+      search: search === "" ? undefined : search,
+      limit: limit + 1,
+      cursor: parsedCursor.kind === "present" ? parsedCursor.cursor : undefined,
+    });
+    const hasNextPage = entries.length > limit;
+    const pageEntries = hasNextPage ? entries.slice(0, limit) : entries;
+    const lastEntry = pageEntries.at(-1);
+
+    return {
+      kind: "found",
+      page: {
+        items: pageEntries.map((entry) => entry.auction),
+        nextCursor:
+          hasNextPage && lastEntry !== undefined ? this.encodeCursor(lastEntry.cursor) : null,
+      },
+    };
+  }
+
+  private parseLimit(value: string | undefined): number | undefined {
+    if (value === undefined) return DEFAULT_AUCTION_LIST_LIMIT;
+    if (!/^[1-9][0-9]*$/.test(value)) return undefined;
+
+    const limit = Number(value);
+    if (!Number.isSafeInteger(limit) || limit > MAX_AUCTION_LIST_LIMIT) return undefined;
+    return limit;
+  }
+
+  private parseCursor(value: string | undefined): CursorParseResult {
+    if (value === undefined) return { kind: "absent" };
+    if (value.length > MAX_AUCTION_LIST_CURSOR_LENGTH || !/^[A-Za-z0-9_-]+$/.test(value)) {
+      return { kind: "invalid" };
+    }
+
+    try {
+      const decoded = Buffer.from(value, "base64url").toString("utf8");
+      if (Buffer.from(decoded, "utf8").toString("base64url") !== value) return { kind: "invalid" };
+
+      const candidate: unknown = JSON.parse(decoded);
+      if (typeof candidate !== "object" || candidate === null) return { kind: "invalid" };
+      if (!("createdAt" in candidate) || !("id" in candidate)) return { kind: "invalid" };
+      if (Object.keys(candidate).length !== 2) return { kind: "invalid" };
+
+      const { createdAt, id } = candidate;
+      if (typeof createdAt !== "string" || !CURSOR_TIMESTAMP_PATTERN.test(createdAt)) {
+        return { kind: "invalid" };
+      }
+      const timestamp = new Date(createdAt);
+      if (Number.isNaN(timestamp.getTime())) return { kind: "invalid" };
+      // Date is used only to validate the calendar, never to rebuild the cursor.
+      if (timestamp.toISOString() !== `${createdAt.slice(0, 23)}Z`) return { kind: "invalid" };
+      if (createdAt.startsWith("0000-")) return { kind: "invalid" };
+      if (typeof id !== "string" || !isPostgresBigintId(id)) return { kind: "invalid" };
+
+      return { kind: "present", cursor: { createdAt, id } };
+    } catch {
+      return { kind: "invalid" };
+    }
+  }
+
+  private encodeCursor(cursor: AuctionListCursor): string {
+    return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+  }
 }
 
 export function isPostgresBigintId(value: string): boolean {
-  if (!/^[1-9][0-9]*$/.test(value)) return false;
+  if (!/^[1-9][0-9]{0,18}$/.test(value)) return false;
   return BigInt(value) <= POSTGRES_BIGINT_MAX;
 }
