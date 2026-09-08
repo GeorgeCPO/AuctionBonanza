@@ -305,4 +305,12 @@ describe.skipIf(databaseUrl === undefined)("auction PostgreSQL schema", () => {
       "WHERE ((cancelled_at IS NULL) AND (closed_at IS NULL))",
     );
   });
+
+  it("indexes the complete newest-first listing order", async () => {
+    const result = await database.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+       WHERE schemaname = 'public' AND indexname = 'auctions_created_at_id_idx'`,
+    );
+    expect(result.rows[0]?.indexdef).toContain("(created_at DESC, id DESC)");
+  });
 });

@@ -9,7 +9,7 @@ import type { Database } from "../src/database.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
-describe.skipIf(databaseUrl === undefined)("auction creation PostgreSQL transaction", () => {
+describe.skipIf(databaseUrl === undefined)("auction PostgreSQL repository", () => {
   let pool: Pool;
   let database: Database;
   let repository: PostgresAuctionRepository;
@@ -66,6 +66,89 @@ describe.skipIf(databaseUrl === undefined)("auction creation PostgreSQL transact
       minimumBidIncrementMinor: "100",
     };
   }
+
+  it.each([1, 2, 3, 20])(
+    "traverses an unchanged dataset with page size %i without duplicates or omissions",
+    async (limit) => {
+      const search = `pagination-${randomUUID()}`;
+      // IDs deliberately disagree with timestamp order. All times collapse to the
+      // same JS millisecond, and two rows have exactly the same PostgreSQL time.
+      const fixtures = [
+        { id: "9007199254740993", time: "2025-01-01T00:00:00.123456Z" },
+        { id: "9007199254740995", time: "2025-01-01T00:00:00.123456Z" },
+        { id: "9007199254740997", time: "2025-01-01T00:00:00.123455Z" },
+        { id: "9007199254740999", time: "2025-01-01T00:00:00.123001Z" },
+      ];
+      for (const fixture of fixtures) {
+        await pool.query(
+          `INSERT INTO auctions (
+             id, owner_id, title, description, currency_code, starts_at, ends_at,
+             starting_price_minor, minimum_bid_increment_minor, created_at, updated_at
+           ) OVERRIDING SYSTEM VALUE
+           VALUES ($1, $2, $3, 'Pagination fixture', 'USD',
+                   now(), now() + interval '1 hour', 0, 1, $4, $4)`,
+          [fixture.id, ownerId, search, fixture.time],
+        );
+      }
+
+      const expected = [fixtures[1]!, fixtures[0]!, fixtures[2]!, fixtures[3]!];
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      for (let pageNumber = 0; pageNumber < 5; pageNumber += 1) {
+        const result = await service.list({ search, limit: String(limit), cursor });
+        if (result.kind !== "found") throw new Error("Expected a page");
+        const { items, nextCursor } = result.page;
+        expect(items.length).toBe(Math.min(limit, fixtures.length - ids.length));
+        ids.push(...items.map((item) => item.id));
+        expect(nextCursor === null).toBe(ids.length === fixtures.length);
+        if (ids.length === fixtures.length) {
+          break;
+        }
+        expect(nextCursor).not.toBeNull();
+        const position: unknown = JSON.parse(Buffer.from(nextCursor!, "base64url").toString());
+        expect(position).toEqual({
+          createdAt: expected[ids.length - 1]!.time,
+          id: expected[ids.length - 1]!.id,
+        });
+        cursor = nextCursor!;
+      }
+      expect(ids).toEqual(expected.map((fixture) => fixture.id));
+      expect(new Set(ids).size).toBe(fixtures.length);
+    },
+  );
+
+  it("matches title substrings case-insensitively with literal wildcard and SQL characters", async () => {
+    const prefix = `search-${randomUUID()}`;
+    const titles = [
+      `${prefix} Vintage CLOCK`,
+      `${prefix} 100%_\\' clock`,
+      `${prefix} 100xy clock`,
+      `${prefix} unrelated`,
+      `${prefix} code_ clock`,
+      `${prefix} codeX clock`,
+    ];
+    for (const title of titles) {
+      const outcome = await service.create(ownerId, {
+        ...futureInput(title),
+        description: `${prefix} description-only needle`,
+      });
+      expect(outcome.kind).toBe("created");
+    }
+    const searches = [
+      { term: `  ${prefix.toUpperCase()} VINTAGE cl  `, titles: [titles[0]] },
+      { term: `${prefix} 100%`, titles: [titles[1]] },
+      { term: `${prefix} code_`, titles: [titles[4]] },
+      { term: `${prefix} 100%_\\'`, titles: [titles[1]] },
+      { term: `${prefix} description-only`, titles: [] },
+      { term: `${prefix}' OR TRUE --`, titles: [] },
+    ];
+    for (const search of searches) {
+      const result = await service.list({ search: search.term });
+      if (result.kind !== "found") throw new Error("Expected a page");
+      expect(result.page.items.map((item) => item.title)).toEqual(search.titles);
+      expect(result.page.nextCursor).toBeNull();
+    }
+  });
 
   it("creates separate auctions for repeated submissions", async () => {
     const input = futureInput();
@@ -164,6 +247,12 @@ describe.skipIf(databaseUrl === undefined)("auction creation PostgreSQL transact
         id: row.id,
         phase: row.expected_phase,
       });
+    }
+    const entries = await repository.list({ limit: 100 });
+    for (const row of result.rows) {
+      expect(entries.find((entry) => entry.auction.id === row.id)?.auction.phase).toBe(
+        row.expected_phase,
+      );
     }
   });
 });

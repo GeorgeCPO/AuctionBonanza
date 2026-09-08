@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import type { Auction } from "../src/auctions/auction.js";
-import type { AuctionServicePort } from "../src/auctions/auction.service.js";
+import { AuctionService, type AuctionServicePort } from "../src/auctions/auction.service.js";
+import type { AuctionRepository } from "../src/auctions/auction.repository.js";
 import type { AuctionConfig } from "../src/config.js";
 import type { Database } from "../src/database.js";
 
@@ -71,6 +72,10 @@ function makeAuctions(overrides: Partial<AuctionServicePort> = {}): AuctionServi
   return {
     create: vi.fn<AuctionServicePort["create"]>(async () => ({ kind: "created", auction })),
     findById: vi.fn<AuctionServicePort["findById"]>(async () => auction),
+    list: vi.fn<AuctionServicePort["list"]>(async () => ({
+      kind: "found",
+      page: { items: [auction], nextCursor: null },
+    })),
     ...overrides,
   };
 }
@@ -91,6 +96,120 @@ function makeApp(auctions: AuctionServicePort, authentication = authenticate) {
 }
 
 describe("auction HTTP API", () => {
+  function makeListingApp() {
+    const list = vi.fn<AuctionRepository["list"]>(async () => []);
+    const repository: AuctionRepository = {
+      create: vi.fn<AuctionRepository["create"]>(),
+      findById: vi.fn<AuctionRepository["findById"]>(),
+      list,
+    };
+    const deny = vi.fn<preHandlerAsyncHookHandler>(async (_request, reply) =>
+      reply.code(401).send({ code: "UNAUTHORIZED" }),
+    );
+    return { app: makeApp(new AuctionService(repository, ["USD"]), deny), list, deny };
+  }
+
+  it.each([undefined, "", "   ", " ClOcK ", "%_\\"])(
+    "normalizes public search %j and defaults the page size",
+    async (search) => {
+      const { app, list, deny } = makeListingApp();
+      const query = new URLSearchParams();
+      if (search !== undefined) query.set("search", search);
+      const response = await app.inject(`/v1/auctions?${query.toString()}`);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ items: [], nextCursor: null });
+      expect(list).toHaveBeenCalledWith({
+        search: search?.trim() || undefined,
+        limit: 21,
+        cursor: undefined,
+      });
+      expect(deny).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["0", "101", "-1", "1.5", "1e2", "01", "", "NaN", " 2", "999999999999999999"])(
+    "rejects invalid limit %j before querying PostgreSQL",
+    async (limit) => {
+      const { app, list } = makeListingApp();
+      const response = await app.inject(
+        `/v1/auctions?${new URLSearchParams({ limit }).toString()}`,
+      );
+      expect(response.statusCode).toBe(400);
+      expect(list).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "",
+    "!",
+    "not-json",
+    "e30=",
+    ...[
+      null,
+      [],
+      {},
+      { createdAt: "2030-02-30T00:00:00.123456Z", id: "1" },
+      { createdAt: "2030-01-01T24:00:00.123456Z", id: "1" },
+      { createdAt: "0000-01-01T00:00:00.123456Z", id: "1" },
+      { createdAt: "2030-01-01T00:00:00.123Z", id: "1" },
+      { createdAt: "2030-01-01T00:00:00.123456Z", id: 1 },
+      { createdAt: "2030-01-01T00:00:00.123456Z", id: "0" },
+      { createdAt: "2030-01-01T00:00:00.123456Z", id: "9223372036854775808" },
+      { createdAt: "2030-01-01T00:00:00.123456Z", id: "1", extra: true },
+    ].map((value) => Buffer.from(JSON.stringify(value)).toString("base64url")),
+  ])("rejects malformed cursor %j", async (cursor) => {
+    const { app, list } = makeListingApp();
+    const response = await app.inject(`/v1/auctions?${new URLSearchParams({ cursor }).toString()}`);
+    expect(response.statusCode).toBe(400);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it.each(["limit=2&limit=3", "cursor=a&cursor=b", "search=a&search=b", "phase=open"])(
+    "rejects unsupported or repeated query parameters %s",
+    async (query) => {
+      const { app, list } = makeListingApp();
+      const response = await app.inject(`/v1/auctions?${query}`);
+      expect(response.statusCode).toBe(400);
+      expect(list).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts the maximum limit and preserves exact cursor values", async () => {
+    const { app, list } = makeListingApp();
+    const position = { createdAt: "2030-01-01T00:00:00.123456Z", id: "9223372036854775807" };
+    const cursor = Buffer.from(JSON.stringify(position)).toString("base64url");
+    const response = await app.inject(`/v1/auctions?limit=100&cursor=${cursor}`);
+    expect(response.statusCode).toBe(200);
+    expect(list).toHaveBeenCalledWith({ search: undefined, limit: 101, cursor: position });
+  });
+
+  it("returns only the requested items and uses the last returned row for the next cursor", async () => {
+    const { app, list } = makeListingApp();
+    const entries = ["9007199254740995", "9007199254740993", "91"].map((id) => ({
+      auction: { ...auction, id },
+      cursor: { createdAt: "2029-12-01T10:00:00.000456Z", id },
+    }));
+    list.mockResolvedValueOnce(entries).mockResolvedValueOnce(entries.slice(2));
+    const first = await app.inject("/v1/auctions?limit=2");
+    const firstPage = first.json<{ items: { id: string }[]; nextCursor: string }>();
+    expect(first.statusCode).toBe(200);
+    expect(firstPage.items.map((item) => item.id)).toEqual([
+      "9007199254740995",
+      "9007199254740993",
+    ]);
+    expect(JSON.parse(Buffer.from(firstPage.nextCursor, "base64url").toString())).toEqual(
+      entries[1]!.cursor,
+    );
+    const second = await app.inject(`/v1/auctions?limit=2&cursor=${firstPage.nextCursor}`);
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ items: [{ id: "91" }], nextCursor: null });
+    expect(list).toHaveBeenLastCalledWith({
+      search: undefined,
+      limit: 3,
+      cursor: entries[1]!.cursor,
+    });
+  });
+
   it("creates an owner-authenticated auction and identifies its resource", async () => {
     const create = vi.fn<AuctionServicePort["create"]>(async () => ({ kind: "created", auction }));
     const auctions = makeAuctions({ create });
@@ -176,6 +295,59 @@ describe("auction HTTP API", () => {
     expect(response.json()).toEqual({
       code: "AUCTION_NOT_FOUND",
       message: "Auction was not found",
+    });
+  });
+
+  it("lists auctions publicly using the existing response shape", async () => {
+    const list = vi.fn<AuctionServicePort["list"]>(async () => ({
+      kind: "found",
+      page: { items: [auction], nextCursor: "next-page" },
+    }));
+    const app = makeApp(makeAuctions({ list }));
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/auctions?search=%20clock%20&limit=5&cursor=current-page",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      items: [
+        {
+          ...auction,
+          startsAt: "2030-01-01T10:00:00.000Z",
+          endsAt: "2030-01-01T11:00:00.000Z",
+          cancelledAt: null,
+          closedAt: null,
+          createdAt: "2029-12-01T10:00:00.000Z",
+          updatedAt: "2029-12-01T10:00:00.000Z",
+        },
+      ],
+      nextCursor: "next-page",
+    });
+    expect(list).toHaveBeenCalledWith({
+      search: " clock ",
+      limit: "5",
+      cursor: "current-page",
+    });
+  });
+
+  it("rejects invalid pagination input", async () => {
+    const list = vi.fn<AuctionServicePort["list"]>(async () => ({
+      kind: "invalid",
+      message: "cursor is invalid",
+    }));
+    const app = makeApp(makeAuctions({ list }));
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/auctions?cursor=not-a-valid-cursor",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      code: "INVALID_REQUEST",
+      message: "Request validation failed",
     });
   });
 });

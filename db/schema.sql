@@ -196,6 +196,13 @@ ALTER TABLE ONLY public.users
 
 
 --
+-- Name: auctions_created_at_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auctions_created_at_id_idx ON public.auctions USING btree (created_at DESC, id DESC);
+
+
+--
 -- Name: auctions_owner_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -298,4 +305,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260902193000'),
     ('20260902193100'),
     ('20260903170000'),
-    ('20260907120000');
+    ('20260907120000'),
+    ('20260907150000');
