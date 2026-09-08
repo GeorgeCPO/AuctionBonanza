@@ -11,12 +11,22 @@ The service currently exposes:
   and cursor pagination.
 - `GET /v1/auctions/:id`, a public resource read whose `phase` is derived using
   the PostgreSQL clock.
+- `POST /v1/auctions/:id/bids`, authenticated with an identity-service access
+  token. Accepts `{ amountMinor, idempotencyKey }` and returns the accepted
+  bid alongside the auction's new `version`/`leadingBidId`/`updatedAt`: `201`
+  for a fresh placement, `200` when a request replays an idempotency key that
+  already succeeded.
 - `GET /health` and `GET /ready` process and PostgreSQL health checks.
 
 Money is represented as decimal minor-unit strings at the JSON boundary.
 Creation idempotency is deferred: no idempotency key is required, and retrying a
 request may create another auction. Clients should avoid automatic creation
-retries when the outcome is unknown.
+retries when the outcome is unknown. Bid placement is the opposite: it
+requires a client-supplied `idempotencyKey` scoped to (auction, bidder, key),
+because a dropped response on a bid that actually qualified, if blindly
+retried after someone else raised the price, would otherwise look like a
+"too low" failure rather than the success it was. Reusing a key with a
+different amount is rejected as a client error.
 
 `GET /v1/auctions` accepts an optional `search` query parameter. It trims the
 term and performs case-insensitive substring matching on titles; an empty term
@@ -44,8 +54,9 @@ parameters and repeated parameters are also rejected.
 For example, request `/v1/auctions?search=clock&limit=20`, then request
 `/v1/auctions?search=clock&limit=20&cursor=<nextCursor>` until `nextCursor` is null.
 
-The initial creation rules, derived phases, terminal facts, and time-sensitive
-transaction rules are recorded in [`../../docs/AUCTION_LIFECYCLE.md`](../../docs/AUCTION_LIFECYCLE.md).
+The initial creation rules, derived phases, terminal facts, bidding contract,
+and time-sensitive transaction rules are recorded in
+[`../../docs/AUCTION_LIFECYCLE.md`](../../docs/AUCTION_LIFECYCLE.md).
 
 `src/authentication.ts` wires the narrow shared access-token verifier to a
 bounded remote-JWKS cache. The create route's Fastify authentication hook parses

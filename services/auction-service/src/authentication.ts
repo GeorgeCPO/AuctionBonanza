@@ -6,7 +6,7 @@ import {
 } from "@auction-bonanza/access-auth";
 import type { preHandlerAsyncHookHandler } from "fastify";
 
-import { isPostgresBigintId } from "./auctions/auction.service.js";
+import { isPostgresBigintId } from "./shared/money.js";
 
 declare module "fastify" {
   interface FastifyRequest {
