@@ -64,6 +64,25 @@ uses no additional index yet: a normal B-tree cannot support an unanchored,
 case-insensitive substring efficiently, and introducing trigram or full-text
 search infrastructure is deferred until search workload justifies it.
 
+The bids migration adds the `bids` table and the `auctions` ↔ `bids` link.
+`bids` rows are immutable — only a bid that qualifies under the current price
+is ever inserted, so bid rows are never updated and never need their own row
+lock. `auction_id`/`bidder_id` reference `auctions(id)`/`users(id)` without
+cascading deletes. `amount_minor` is a minor-unit `bigint` and must be
+positive. The unique index on `(auction_id, bidder_id, idempotency_key)`
+scopes client-supplied idempotency-key replay detection per bidder per
+auction and doubles as its lookup index; because the acceptance transaction
+locks the parent `auctions` row before ever consulting this index, concurrent
+duplicate submissions are already serialized by that lock, so the constraint
+is a defensive invariant rather than the primary concurrency guard.
+`(auction_id, created_at DESC, id DESC)` supports a future keyset-paginated
+bid-history read, mirroring `auctions_created_at_id_idx`. `auctions.leading_bid_id`
+is a nullable FK to `bids(id)`, added after `bids` exists so the two tables'
+foreign keys point in only one direction inside the migration. It
+denormalizes the current highest accepted bid so acceptance — and a future
+cancellation check — are both a single locked read of the `auctions` row, as
+documented in [`../../docs/AUCTION_LIFECYCLE.md`](../../docs/AUCTION_LIFECYCLE.md).
+
 Existing rows predate required title, currency, and bid-increment fields. The
 migration derives their title from the description and backfills `USD`, a
 one-minor-unit increment, version 1, and `updated_at = created_at`. Those

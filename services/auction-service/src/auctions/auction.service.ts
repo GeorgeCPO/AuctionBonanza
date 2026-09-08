@@ -1,7 +1,7 @@
+import { isPostgresBigintId, parseMinorUnits } from "../shared/money.js";
 import type { Auction } from "./auction.js";
 import type { AuctionListCursor, AuctionRepository } from "./auction.repository.js";
 
-const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
 const DEFAULT_AUCTION_LIST_LIMIT = 20;
 const MAX_AUCTION_LIST_LIMIT = 100;
 const CURSOR_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
@@ -47,13 +47,6 @@ export interface AuctionServicePort {
 
 function characterLength(value: string): number {
   return Array.from(value).length;
-}
-
-function parseMinorUnits(value: string, allowZero: boolean): string | undefined {
-  if (!/^(0|[1-9][0-9]*)$/.test(value)) return undefined;
-  const amount = BigInt(value);
-  if (amount > POSTGRES_BIGINT_MAX || (!allowZero && amount === 0n)) return undefined;
-  return amount.toString();
 }
 
 function parseTimestamp(value: string): Date | undefined {
@@ -211,9 +204,4 @@ export class AuctionService implements AuctionServicePort {
   private encodeCursor(cursor: AuctionListCursor): string {
     return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
   }
-}
-
-export function isPostgresBigintId(value: string): boolean {
-  if (!/^[1-9][0-9]{0,18}$/.test(value)) return false;
-  return BigInt(value) <= POSTGRES_BIGINT_MAX;
 }

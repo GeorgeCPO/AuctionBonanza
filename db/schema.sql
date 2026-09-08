@@ -38,6 +38,7 @@ CREATE TABLE public.auctions (
     cancelled_at timestamp with time zone,
     closed_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    leading_bid_id bigint,
     CONSTRAINT auctions_closed_at_check CHECK (((closed_at IS NULL) OR (closed_at >= ends_at))),
     CONSTRAINT auctions_currency_code_check CHECK (((currency_code)::text ~ '^[A-Z]{3}$'::text)),
     CONSTRAINT auctions_description_check CHECK (((description = btrim(description)) AND ((char_length(description) >= 1) AND (char_length(description) <= 10000)))),
@@ -58,6 +59,36 @@ CREATE TABLE public.auctions (
 
 ALTER TABLE public.auctions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.auctions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: bids; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bids (
+    id bigint NOT NULL,
+    auction_id bigint NOT NULL,
+    bidder_id bigint NOT NULL,
+    amount_minor bigint NOT NULL,
+    idempotency_key character varying(100) NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT bids_amount_minor_check CHECK ((amount_minor > 0)),
+    CONSTRAINT bids_idempotency_key_check CHECK ((((idempotency_key)::text = btrim((idempotency_key)::text)) AND ((char_length((idempotency_key)::text) >= 1) AND (char_length((idempotency_key)::text) <= 100))))
+);
+
+
+--
+-- Name: bids_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.bids ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.bids_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -148,6 +179,14 @@ ALTER TABLE ONLY public.auctions
 
 
 --
+-- Name: bids bids_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bids
+    ADD CONSTRAINT bids_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: identity_refresh_tokens identity_refresh_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -217,6 +256,20 @@ CREATE INDEX auctions_pending_finalization_idx ON public.auctions USING btree (e
 
 
 --
+-- Name: bids_auction_bidder_idempotency_key_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX bids_auction_bidder_idempotency_key_idx ON public.bids USING btree (auction_id, bidder_id, idempotency_key);
+
+
+--
+-- Name: bids_auction_id_created_at_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX bids_auction_id_created_at_id_idx ON public.bids USING btree (auction_id, created_at DESC, id DESC);
+
+
+--
 -- Name: identity_refresh_tokens_consumed_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -259,11 +312,35 @@ CREATE UNIQUE INDEX users_email_case_insensitive_key ON public.users USING btree
 
 
 --
+-- Name: auctions auctions_leading_bid_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auctions
+    ADD CONSTRAINT auctions_leading_bid_id_fkey FOREIGN KEY (leading_bid_id) REFERENCES public.bids(id);
+
+
+--
 -- Name: auctions auctions_owner_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.auctions
     ADD CONSTRAINT auctions_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.users(id);
+
+
+--
+-- Name: bids bids_auction_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bids
+    ADD CONSTRAINT bids_auction_id_fkey FOREIGN KEY (auction_id) REFERENCES public.auctions(id);
+
+
+--
+-- Name: bids bids_bidder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bids
+    ADD CONSTRAINT bids_bidder_id_fkey FOREIGN KEY (bidder_id) REFERENCES public.users(id);
 
 
 --
@@ -306,4 +383,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260902193100'),
     ('20260903170000'),
     ('20260907120000'),
-    ('20260907150000');
+    ('20260907150000'),
+    ('20260908073852');

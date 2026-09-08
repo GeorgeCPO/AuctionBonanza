@@ -63,7 +63,35 @@ Time-sensitive transitions must lock the auction row and then evaluate
 `clock_timestamp()`. PostgreSQL `now()` is fixed at transaction start, so using
 it after waiting for a lock could admit a bid whose real deadline has passed.
 
-Winner and displayed-price fields are intentionally deferred until the bids
-model defines simple and automatic/max bidding semantics. Finalization will
-eventually persist either an unsold result or a winning-bid reference in the
-same transaction as its outbox event.
+## Bidding contract
+
+- A bid is placed via `POST /v1/auctions/:id/bids`, authenticated; the
+  principal is the bidder.
+- A bid must meet the current qualifying threshold: the leading bid's amount
+  plus `minimum_bid_increment_minor` if the auction already has an accepted
+  bid, otherwise `starting_price_minor`. Bids must be strictly positive even
+  when `starting_price_minor` is zero, so the first-bid threshold is
+  effectively `max(starting_price_minor, 1)`.
+- Acceptance locks the auction row with `SELECT ... FOR UPDATE`, evaluates
+  phase from the same `clock_timestamp()` captured under that lock, and only
+  then validates and inserts, matching the "lock, then evaluate" rule above.
+  The same captured instant is also written as the accepted bid's
+  `created_at` and the auction's resulting `updated_at`, so a bid can never
+  be timestamped later than the mutation it caused.
+- An accepted bid is immutable: a bid that doesn't qualify is never
+  persisted. Acceptance sets `auctions.leading_bid_id` to the new bid and
+  increments `version`, in the same transaction as the insert.
+- A client-supplied `idempotencyKey`, scoped to (auction, bidder, key), lets a
+  retried request return the original outcome instead of being re-evaluated
+  against a since-changed price or phase. This closes a real gap: a dropped
+  response on a bid that actually qualified, retried after someone else has
+  since raised the price, would otherwise look like a "too low" failure even
+  though the original bid succeeded. Reusing a key with a different amount is
+  a client error, not a replay.
+- Automatic/max (proxy) bidding is out of scope; only this simple threshold
+  rule is implemented.
+
+The bids model above defines simple bidding. Automatic/max bidding, and the
+finalization transaction that turns a leading bid into a persisted winner
+(unsold result or winning-bid reference) in the same transaction as its
+outbox event, remain deferred.
