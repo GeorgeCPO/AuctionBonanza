@@ -3,6 +3,7 @@ import type { ApiRoute } from "@auction-bonanza/http-routing";
 
 import type { AuctionApiDependencies } from "../api/dependencies.js";
 import { authenticatedRoute } from "../api/authenticated-route.js";
+import { isPostgresBigintId } from "../shared/money.js";
 import { toBidJson } from "./bid.js";
 import { MAX_IDEMPOTENCY_KEY_LENGTH, type PlaceBidInput } from "./bid.service.js";
 
@@ -35,6 +36,16 @@ export class BidController {
       },
       handler: async (request, reply, { principal }) => {
         const { id } = request.params as { id: string };
+        // The params pattern bounds the digit count, not the value: a 19-digit
+        // ID above bigint's maximum would otherwise reach PostgreSQL as an
+        // out-of-range cast (22003) and surface as a 500.
+        if (!isPostgresBigintId(id)) {
+          return reply.code(400).send({
+            code: "INVALID_REQUEST",
+            message: "Request validation failed",
+          });
+        }
+
         const outcome = await this.dependencies.bids.create(
           id,
           principal.userId,

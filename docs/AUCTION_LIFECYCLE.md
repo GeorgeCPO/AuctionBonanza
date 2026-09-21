@@ -60,8 +60,15 @@ currency or bid-increment default and must state both values.
 - Every externally visible aggregate mutation increments `version`.
 
 Time-sensitive transitions must lock the auction row and then evaluate
-`clock_timestamp()`. PostgreSQL `now()` is fixed at transaction start, so using
-it after waiting for a lock could admit a bid whose real deadline has passed.
+`clock_timestamp()` in a later statement. PostgreSQL `now()` is fixed at
+transaction start, so using it after waiting for a lock could admit a bid whose
+real deadline has passed. Putting `clock_timestamp()` in the same statement as
+`FOR UPDATE` has the same flaw: the target list is evaluated before the row lock
+is taken, so the captured instant predates any wait. Likewise, under READ
+COMMITTED a locking statement keeps the snapshot it started with; joined rows
+that another transaction committed while it waited are not visible to it, even
+though the locked row itself is re-read. Lock in one statement, then read state
+and time in the next.
 
 ## Bidding contract
 
@@ -72,15 +79,18 @@ it after waiting for a lock could admit a bid whose real deadline has passed.
   bid, otherwise `starting_price_minor`. Bids must be strictly positive even
   when `starting_price_minor` is zero, so the first-bid threshold is
   effectively `max(starting_price_minor, 1)`.
-- Acceptance locks the auction row with `SELECT ... FOR UPDATE`, evaluates
-  phase from the same `clock_timestamp()` captured under that lock, and only
-  then validates and inserts, matching the "lock, then evaluate" rule above.
+- Acceptance locks the auction row with `SELECT ... FOR UPDATE`, then in a
+  separate statement reads the auction, its leading bid, and one
+  `clock_timestamp()`, and only then validates and inserts, matching the
+  "lock, then evaluate" rule above.
   The same captured instant is also written as the accepted bid's
   `created_at` and the auction's resulting `updated_at`, so a bid can never
   be timestamped later than the mutation it caused.
 - An accepted bid is immutable: a bid that doesn't qualify is never
   persisted. Acceptance sets `auctions.leading_bid_id` to the new bid and
-  increments `version`, in the same transaction as the insert.
+  increments `version`, in the same transaction as the insert. A composite
+  foreign key ensures `leading_bid_id` can only reference a bid on that same
+  auction.
 - A client-supplied `idempotencyKey`, scoped to (auction, bidder, key), lets a
   retried request return the original outcome instead of being re-evaluated
   against a since-changed price or phase. This closes a real gap: a dropped

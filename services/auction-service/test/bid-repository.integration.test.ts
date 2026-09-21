@@ -438,4 +438,81 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
     );
     expect(auctionRow.rows[0]?.updated_at.getTime()).toBe(outcome.bid.createdAt.getTime());
   });
+
+  // The next two tests hold the auction row lock from a separate client while
+  // placeBid blocks on it, then change the world before releasing. They pin
+  // the "lock in one statement, read in the next" structure: a single
+  // lock-and-read statement captures clock_timestamp() and its snapshot before
+  // the wait, so it would see neither the passed deadline nor the new bid.
+
+  it("rejects a bid whose deadline passes while it waits for the auction lock", async () => {
+    const auctionId = await insertAuction({ endsAtOffsetMs: 800 });
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM auctions WHERE id = $1 FOR UPDATE", [auctionId]);
+
+      const blocked = repository.placeBid({
+        auctionId,
+        bidderId,
+        amountMinor: "1000",
+        idempotencyKey: "late",
+      });
+      // Let the deadline pass while the bid is still blocked on the lock.
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      await holder.query("COMMIT");
+
+      await expect(blocked).resolves.toEqual({
+        kind: "auction_not_open",
+        phase: "awaiting_finalization",
+      });
+    } finally {
+      holder.release();
+    }
+    const count = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM bids WHERE auction_id = $1",
+      [auctionId],
+    );
+    expect(count.rows[0]?.count).toBe("0");
+  });
+
+  it("observes a leading bid committed while it waits for the auction lock", async () => {
+    const auctionId = await insertAuction({
+      startingPriceMinor: "1000",
+      minimumBidIncrementMinor: "100",
+    });
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM auctions WHERE id = $1 FOR UPDATE", [auctionId]);
+
+      const blocked = repository.placeBid({
+        auctionId,
+        bidderId: otherBidderId,
+        amountMinor: "1000",
+        idempotencyKey: "blocked",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // Accept a higher bid on the holder's connection, then release the lock.
+      const inserted = await holder.query<{ id: string }>(
+        `INSERT INTO bids (auction_id, bidder_id, amount_minor, idempotency_key, created_at)
+         VALUES ($1, $2, 1500, 'holder', clock_timestamp())
+         RETURNING id::text`,
+        [auctionId, bidderId],
+      );
+      await holder.query(
+        "UPDATE auctions SET leading_bid_id = $1, version = version + 1 WHERE id = $2",
+        [inserted.rows[0]!.id, auctionId],
+      );
+      await holder.query("COMMIT");
+
+      await expect(blocked).resolves.toEqual({
+        kind: "bid_too_low",
+        minimumQualifyingAmountMinor: "1600",
+      });
+    } finally {
+      holder.release();
+    }
+  });
 });
