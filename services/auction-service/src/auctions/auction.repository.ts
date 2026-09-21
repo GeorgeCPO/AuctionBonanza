@@ -1,5 +1,5 @@
 import type { Database } from "../database.js";
-import type { Auction } from "./auction.js";
+import { derivePhase, type Auction } from "./auction.js";
 
 interface AuctionRow extends Record<string, unknown> {
   id: string;
@@ -185,16 +185,15 @@ export class PostgresAuctionRepository implements AuctionRepository {
   }
 
   private mapAuction(row: AuctionRow): Auction {
-    let phase: Auction["phase"] = "awaiting_finalization";
-    if (row.cancelled_at !== null) {
-      phase = "cancelled";
-    } else if (row.closed_at !== null) {
-      phase = "closed";
-    } else if (row.observed_at < row.starts_at) {
-      phase = "scheduled";
-    } else if (row.observed_at < row.ends_at) {
-      phase = "open";
-    }
+    const phase = derivePhase(
+      {
+        cancelledAt: row.cancelled_at,
+        closedAt: row.closed_at,
+        startsAt: row.starts_at,
+        endsAt: row.ends_at,
+      },
+      row.observed_at,
+    );
 
     return {
       id: row.id,

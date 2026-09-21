@@ -6,6 +6,8 @@ import { buildApp } from "../src/app.js";
 import type { Auction } from "../src/auctions/auction.js";
 import { AuctionService, type AuctionServicePort } from "../src/auctions/auction.service.js";
 import type { AuctionRepository } from "../src/auctions/auction.repository.js";
+import type { Bid } from "../src/bids/bid.js";
+import type { BidServicePort } from "../src/bids/bid.service.js";
 import type { AuctionConfig } from "../src/config.js";
 import type { Database } from "../src/database.js";
 
@@ -54,6 +56,21 @@ const validPayload = {
   startingPriceMinor: "1000",
   minimumBidIncrementMinor: "100",
 };
+const bid: Bid = {
+  id: "500",
+  auctionId: "91",
+  bidderId: "42",
+  amountMinor: "1100",
+  idempotencyKey: "client-key-1",
+  createdAt: new Date("2030-01-01T10:05:00.000Z"),
+};
+const bidAuctionState = {
+  id: "91",
+  version: "2",
+  leadingBidId: "500",
+  updatedAt: new Date("2030-01-01T10:05:00.000Z"),
+};
+const validBidPayload = { amountMinor: "1100", idempotencyKey: "client-key-1" };
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map(async (app) => app.close()));
@@ -80,15 +97,32 @@ function makeAuctions(overrides: Partial<AuctionServicePort> = {}): AuctionServi
   };
 }
 
+function makeBids(overrides: Partial<BidServicePort> = {}): BidServicePort {
+  return {
+    create: vi.fn<BidServicePort["create"]>(async () => ({
+      kind: "placed",
+      bid,
+      auction: bidAuctionState,
+      replay: false,
+    })),
+    ...overrides,
+  };
+}
+
 const authenticate: preHandlerAsyncHookHandler = async (request) => {
   request.auctionPrincipal = principal;
 };
 
-function makeApp(auctions: AuctionServicePort, authentication = authenticate) {
+function makeApp(
+  auctions: AuctionServicePort,
+  authentication = authenticate,
+  bids: BidServicePort = makeBids(),
+) {
   const app = buildApp({
     config,
     database: makeDatabase(),
     auctions,
+    bids,
     authenticate: authentication,
   });
   apps.push(app);
@@ -350,4 +384,183 @@ describe("auction HTTP API", () => {
       message: "Request validation failed",
     });
   });
+});
+
+describe("bid HTTP API", () => {
+  function postBid(
+    create: BidServicePort["create"],
+    payload: Record<string, unknown> = validBidPayload,
+    authentication = authenticate,
+  ) {
+    const app = makeApp(makeAuctions(), authentication, makeBids({ create }));
+    return app.inject({
+      method: "POST",
+      url: "/v1/auctions/91/bids",
+      headers: { authorization: "Bearer access-token" },
+      payload,
+    });
+  }
+
+  it("places a new bid and returns 201 with the bid and updated auction", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({
+      kind: "placed",
+      bid,
+      auction: bidAuctionState,
+      replay: false,
+    }));
+
+    const response = await postBid(create);
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual({
+      bid: {
+        ...bid,
+        createdAt: bid.createdAt.toISOString(),
+      },
+      auction: {
+        ...bidAuctionState,
+        updatedAt: bidAuctionState.updatedAt.toISOString(),
+      },
+    });
+    expect(create).toHaveBeenCalledWith("91", "42", validBidPayload);
+  });
+
+  it("returns 200 for an idempotent replay instead of 201", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({
+      kind: "placed",
+      bid,
+      auction: bidAuctionState,
+      replay: true,
+    }));
+
+    const response = await postBid(create);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ bid: { id: bid.id } });
+  });
+
+  it("rejects malformed bid input with 400 INVALID_BID", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({
+      kind: "invalid",
+      message: "amountMinor must be a positive integer within the supported range",
+    }));
+
+    const response = await postBid(create);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      code: "INVALID_BID",
+      message: "amountMinor must be a positive integer within the supported range",
+    });
+  });
+
+  it("returns 404 AUCTION_NOT_FOUND", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({ kind: "auction_not_found" }));
+
+    const response = await postBid(create);
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      code: "AUCTION_NOT_FOUND",
+      message: "Auction was not found",
+    });
+  });
+
+  it("returns 409 AUCTION_NOT_OPEN with the current phase", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({
+      kind: "auction_not_open",
+      phase: "closed",
+    }));
+
+    const response = await postBid(create);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      code: "AUCTION_NOT_OPEN",
+      message: "Auction is not currently open for bidding",
+      phase: "closed",
+    });
+  });
+
+  it("returns 403 SELF_BID_NOT_ALLOWED", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({ kind: "self_bid_not_allowed" }));
+
+    const response = await postBid(create);
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({
+      code: "SELF_BID_NOT_ALLOWED",
+      message: "The auction owner cannot bid on their own auction",
+    });
+  });
+
+  it("returns 422 BID_TOO_LOW with the minimum qualifying amount", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({
+      kind: "bid_too_low",
+      minimumQualifyingAmountMinor: "1200",
+    }));
+
+    const response = await postBid(create);
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual({
+      code: "BID_TOO_LOW",
+      message: "Bid does not meet the minimum qualifying amount",
+      minimumQualifyingAmountMinor: "1200",
+    });
+  });
+
+  it("returns 409 IDEMPOTENCY_KEY_REUSED when the key is reused with a different amount", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({
+      kind: "idempotency_key_reused",
+      originalAmountMinor: "1100",
+    }));
+
+    const response = await postBid(create);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      code: "IDEMPOTENCY_KEY_REUSED",
+      message: "This idempotency key was already used with a different amount",
+      originalAmountMinor: "1100",
+    });
+  });
+
+  it("rejects bidding when authentication fails", async () => {
+    const create = vi.fn<BidServicePort["create"]>(async () => ({
+      kind: "placed",
+      bid,
+      auction: bidAuctionState,
+      replay: false,
+    }));
+    const deny: preHandlerAsyncHookHandler = async (_request, reply) =>
+      reply.code(401).send({ code: "UNAUTHORIZED", message: "Authentication is required" });
+
+    const response = await postBid(create, validBidPayload, deny);
+
+    expect(response.statusCode).toBe(401);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it.each(["not-an-id", "0", "9223372036854775808"])(
+    "rejects auction id %j before invoking the service",
+    async (id) => {
+      const create = vi.fn<BidServicePort["create"]>();
+      const app = makeApp(makeAuctions(), authenticate, makeBids({ create }));
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/auctions/${id}/bids`,
+        headers: { authorization: "Bearer access-token" },
+        payload: validBidPayload,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        code: "INVALID_REQUEST",
+        message: "Request validation failed",
+      });
+      expect(create).not.toHaveBeenCalled();
+    },
+  );
 });
