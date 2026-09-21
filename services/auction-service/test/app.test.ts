@@ -542,18 +542,25 @@ describe("bid HTTP API", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("rejects a malformed auction id before invoking the service", async () => {
-    const create = vi.fn<BidServicePort["create"]>();
-    const app = makeApp(makeAuctions(), authenticate, makeBids({ create }));
+  it.each(["not-an-id", "0", "9223372036854775808"])(
+    "rejects auction id %j before invoking the service",
+    async (id) => {
+      const create = vi.fn<BidServicePort["create"]>();
+      const app = makeApp(makeAuctions(), authenticate, makeBids({ create }));
 
-    const response = await app.inject({
-      method: "POST",
-      url: "/v1/auctions/not-an-id/bids",
-      headers: { authorization: "Bearer access-token" },
-      payload: validBidPayload,
-    });
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/auctions/${id}/bids`,
+        headers: { authorization: "Bearer access-token" },
+        payload: validBidPayload,
+      });
 
-    expect(response.statusCode).toBe(400);
-    expect(create).not.toHaveBeenCalled();
-  });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        code: "INVALID_REQUEST",
+        message: "Request validation failed",
+      });
+      expect(create).not.toHaveBeenCalled();
+    },
+  );
 });

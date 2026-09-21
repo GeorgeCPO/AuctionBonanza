@@ -233,4 +233,30 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL schema", () => {
       ]),
     ).rejects.toMatchObject({ code: "23503", constraint: "auctions_leading_bid_id_fkey" });
   });
+
+  it("rejects a leading_bid_id that belongs to a different auction", async () => {
+    const other = await database.query<{ id: string }>(
+      `INSERT INTO auctions (
+         owner_id, title, description, currency_code, starts_at, ends_at,
+         starting_price_minor, minimum_bid_increment_minor
+       )
+       VALUES ($1, 'Other auction', 'Another lot.', 'USD',
+               now(), now() + interval '1 hour', 1000, 100)
+       RETURNING id::text`,
+      [ownerId],
+    );
+    const inserted = await database.query<{ id: string }>(
+      `INSERT INTO bids (auction_id, bidder_id, amount_minor, idempotency_key, created_at)
+       VALUES ($1, $2, 1000, 'key-1', now())
+       RETURNING id::text`,
+      [auctionId, bidderId],
+    );
+
+    await expect(
+      database.query("UPDATE auctions SET leading_bid_id = $1 WHERE id = $2", [
+        inserted.rows[0]?.id,
+        other.rows[0]?.id,
+      ]),
+    ).rejects.toMatchObject({ code: "23503", constraint: "auctions_leading_bid_id_fkey" });
+  });
 });

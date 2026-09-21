@@ -179,6 +179,14 @@ ALTER TABLE ONLY public.auctions
 
 
 --
+-- Name: bids bids_auction_id_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bids
+    ADD CONSTRAINT bids_auction_id_id_key UNIQUE (auction_id, id);
+
+
+--
 -- Name: bids bids_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -316,7 +324,7 @@ CREATE UNIQUE INDEX users_email_case_insensitive_key ON public.users USING btree
 --
 
 ALTER TABLE ONLY public.auctions
-    ADD CONSTRAINT auctions_leading_bid_id_fkey FOREIGN KEY (leading_bid_id) REFERENCES public.bids(id);
+    ADD CONSTRAINT auctions_leading_bid_id_fkey FOREIGN KEY (id, leading_bid_id) REFERENCES public.bids(auction_id, id);
 
 
 --

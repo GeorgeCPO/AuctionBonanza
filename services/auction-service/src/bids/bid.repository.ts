@@ -65,22 +65,35 @@ export class PostgresBidRepository implements BidRepository {
     try {
       await client.query("BEGIN");
 
-      // Lock the auction row every bid on it must pass through, and capture
-      // clock_timestamp() once now that the lock is held. Reused for every
-      // write below instead of a fresh now()/clock_timestamp() call, per
-      // docs/AUCTION_LIFECYCLE.md's warning that now() is fixed at
-      // transaction start and could admit a bid whose real deadline passed
-      // while waiting for the lock. `locked` is a CTE (not a repeated
-      // `clock_timestamp()` call) so both the Date and full-precision-text
-      // projections below come from the exact same instant. The text form is
-      // what actually gets written back as created_at/updated_at: node-pg
-      // truncates timestamptz to millisecond precision when parsing it into
-      // a JS Date, and writing that lossy value back could violate
+      // Step 1: only acquire the lock. This statement may block behind another
+      // bid on the same auction, so nothing time- or state-sensitive is read
+      // here. In READ COMMITTED a statement's snapshot is fixed at its start,
+      // so a single "lock and read" statement would evaluate clock_timestamp()
+      // before the wait (admitting a bid whose deadline passed while blocked)
+      // and would join `bids` against a snapshot that predates the bid the
+      // other transaction just committed (reading a NULL leading amount and
+      // falling back to the starting price). Locking first and reading in a
+      // later statement gives both a post-lock clock and a post-lock snapshot.
+      const lockResult = await client.query("SELECT id FROM auctions WHERE id = $1 FOR UPDATE", [
+        input.auctionId,
+      ]);
+      if (lockResult.rows.length === 0) {
+        await client.query("COMMIT");
+        committed = true;
+        return { kind: "auction_not_found" };
+      }
+
+      // Step 2: now that the lock is held, read the auction, its leading bid,
+      // and clock_timestamp() in one fresh-snapshot statement. `observed` is a
+      // subquery (not a repeated clock_timestamp() call) so both the Date and
+      // full-precision-text projections come from the exact same instant. The
+      // text form is what gets written back as created_at/updated_at: node-pg
+      // truncates timestamptz to millisecond precision when parsing it into a
+      // JS Date, and writing that lossy value back could violate
       // auctions_updated_at_check for a bid placed within the same
       // millisecond as its auction's created_at.
       const auctionResult = await client.query(
-        `WITH locked AS (SELECT clock_timestamp() AS observed_at)
-         SELECT
+        `SELECT
            auctions.id::text AS id,
            auctions.owner_id::text AS owner_id,
            auctions.starts_at,
@@ -93,24 +106,19 @@ export class PostgresBidRepository implements BidRepository {
            auctions.updated_at,
            auctions.leading_bid_id::text AS leading_bid_id,
            leading_bid.amount_minor::text AS leading_bid_amount_minor,
-           locked.observed_at,
+           observed.observed_at,
            to_char(
-             locked.observed_at AT TIME ZONE 'UTC',
+             observed.observed_at AT TIME ZONE 'UTC',
              'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
            ) AS observed_at_text
          FROM auctions
-         CROSS JOIN locked
+         CROSS JOIN (SELECT clock_timestamp() AS observed_at) AS observed
          LEFT JOIN bids AS leading_bid ON leading_bid.id = auctions.leading_bid_id
-         WHERE auctions.id = $1
-         FOR UPDATE OF auctions`,
+         WHERE auctions.id = $1`,
         [input.auctionId],
       );
       const auctionRow = auctionResult.rows[0] as AuctionLockRow | undefined;
-      if (auctionRow === undefined) {
-        await client.query("COMMIT");
-        committed = true;
-        return { kind: "auction_not_found" };
-      }
+      if (auctionRow === undefined) throw new Error("Locked auction was not returned");
 
       // Idempotency is checked before any other business rule: a retried
       // request must report what already happened, not be re-evaluated

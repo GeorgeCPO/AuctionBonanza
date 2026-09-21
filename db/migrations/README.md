@@ -77,11 +77,16 @@ duplicate submissions are already serialized by that lock, so the constraint
 is a defensive invariant rather than the primary concurrency guard.
 `(auction_id, created_at DESC, id DESC)` supports a future keyset-paginated
 bid-history read, mirroring `auctions_created_at_id_idx`. `auctions.leading_bid_id`
-is a nullable FK to `bids(id)`, added after `bids` exists so the two tables'
+is a nullable reference to `bids`, added after `bids` exists so the two tables'
 foreign keys point in only one direction inside the migration. It
 denormalizes the current highest accepted bid so acceptance — and a future
 cancellation check — are both a single locked read of the `auctions` row, as
 documented in [`../../docs/AUCTION_LIFECYCLE.md`](../../docs/AUCTION_LIFECYCLE.md).
+The foreign key is composite, `(id, leading_bid_id)` referencing
+`bids (auction_id, id)`, backed by the otherwise-redundant
+`bids_auction_id_id_key` unique constraint. A plain reference to `bids(id)`
+would let an auction point at another auction's bid and leave that invariant
+to writer discipline; the composite key makes PostgreSQL reject it.
 
 Existing rows predate required title, currency, and bid-increment fields. The
 migration derives their title from the description and backfills `USD`, a
