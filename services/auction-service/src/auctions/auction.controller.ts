@@ -3,8 +3,8 @@ import type { ApiRoute } from "@auction-bonanza/http-routing";
 
 import type { AuctionApiDependencies } from "../api/dependencies.js";
 import { authenticatedRoute } from "../api/authenticated-route.js";
+import { isPostgresBigintId } from "../shared/money.js";
 import {
-  isPostgresBigintId,
   MAX_AUCTION_LIST_CURSOR_LENGTH,
   type CreateAuctionInput,
   type ListAuctionsInput,

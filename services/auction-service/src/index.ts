@@ -2,6 +2,8 @@ import { buildApp } from "./app.js";
 import { createAuctionAccessTokenVerifier, createAuthenticationHook } from "./authentication.js";
 import { PostgresAuctionRepository } from "./auctions/auction.repository.js";
 import { AuctionService } from "./auctions/auction.service.js";
+import { PostgresBidRepository } from "./bids/bid.repository.js";
+import { BidService } from "./bids/bid.service.js";
 import { loadAuctionConfig } from "./config.js";
 import { createDatabasePool } from "./database.js";
 
@@ -20,10 +22,12 @@ if (import.meta.main) {
     new PostgresAuctionRepository(database),
     config.supportedCurrencyCodes,
   );
+  const bids = new BidService(new PostgresBidRepository(database));
   const app = buildApp({
     config,
     database,
     auctions,
+    bids,
     authenticate: createAuthenticationHook(accessTokenVerifier),
   });
 
