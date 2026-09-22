@@ -67,6 +67,12 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
       [[ownerId, bidderId, otherBidderId]],
     );
     await pool.query(
+      `DELETE FROM outbox_events WHERE auction_id IN (
+         SELECT id FROM auctions WHERE owner_id = ANY($1::bigint[])
+       )`,
+      [[ownerId, bidderId, otherBidderId]],
+    );
+    await pool.query(
       `DELETE FROM bids WHERE auction_id IN (
          SELECT id FROM auctions WHERE owner_id = ANY($1::bigint[])
        )`,
@@ -145,6 +151,40 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
       leading_bid_id: outcome.bid.id,
       version: "2",
     });
+
+    const eventResult = await pool.query<{
+      event_id: string;
+      event_type: string;
+      occurred_at: Date;
+      auction_id: string;
+      auction_version: string;
+      payload: Record<string, unknown>;
+      published_at: Date | null;
+    }>(
+      `SELECT event_id::text, event_type, occurred_at, auction_id::text,
+              auction_version::text, payload, published_at
+       FROM outbox_events
+       WHERE auction_id = $1`,
+      [auctionId],
+    );
+    expect(eventResult.rows).toHaveLength(1);
+    expect(eventResult.rows[0]).toMatchObject({
+      event_type: "BidAccepted.v1",
+      auction_id: auctionId,
+      auction_version: "2",
+      published_at: null,
+      payload: {
+        eventType: "BidAccepted.v1",
+        auctionId,
+        auctionVersion: "2",
+        bidId: outcome.bid.id,
+        amountMinor: "1000",
+        currencyCode: "USD",
+      },
+    });
+    expect(eventResult.rows[0]?.payload.eventId).toBe(eventResult.rows[0]?.event_id);
+    expect(eventResult.rows[0]?.payload.occurredAt).toEqual(expect.any(String));
+    expect(eventResult.rows[0]?.occurred_at.getTime()).toBe(outcome.bid.createdAt.getTime());
   });
 
   it("rejects a bid below the current qualifying threshold and reports it", async () => {
@@ -167,6 +207,12 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
     });
 
     expect(outcome).toEqual({ kind: "bid_too_low", minimumQualifyingAmountMinor: "1100" });
+
+    const eventCount = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM outbox_events WHERE auction_id = $1",
+      [auctionId],
+    );
+    expect(eventCount.rows[0]?.count).toBe("1");
   });
 
   it("floors the qualifying threshold at 1 minor unit when the starting price is zero", async () => {
@@ -332,6 +378,12 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
     );
     expect(countResult.rows[0]?.count).toBe("1");
 
+    const eventCount = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM outbox_events WHERE auction_id = $1",
+      [auctionId],
+    );
+    expect(eventCount.rows[0]?.count).toBe("1");
+
     const auctionRow = await pool.query<{ version: string }>(
       `SELECT version::text FROM auctions WHERE id = $1`,
       [auctionId],
@@ -392,6 +444,63 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
       [auctionId, "concurrent-key"],
     );
     expect(countResult.rows[0]?.count).toBe("1");
+
+    const eventCount = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM outbox_events WHERE auction_id = $1",
+      [auctionId],
+    );
+    expect(eventCount.rows[0]?.count).toBe("1");
+  });
+
+  it("rolls back the bid and auction update when outbox insertion fails", async () => {
+    const auctionId = await insertAuction();
+    const failingDatabase: Database = {
+      query: async (text, values) => database.query(text, values),
+      connect: async () => {
+        const client = await database.connect();
+        return {
+          query: async (text, values) => {
+            if (text.includes("INSERT INTO outbox_events")) {
+              const invalidValues = [...(values ?? [])];
+              invalidValues[0] = "not-a-uuid";
+              return client.query(text, invalidValues);
+            }
+            return client.query(text, values);
+          },
+          release: () => client.release(),
+        };
+      },
+    };
+
+    await expect(
+      new PostgresBidRepository(failingDatabase).placeBid({
+        auctionId,
+        bidderId,
+        amountMinor: "1000",
+        idempotencyKey: "outbox-failure",
+      }),
+    ).rejects.toThrow("invalid input syntax for type uuid");
+
+    const persisted = await pool.query<{
+      version: string;
+      leading_bid_id: string | null;
+      bid_count: string;
+      event_count: string;
+    }>(
+      `SELECT auctions.version::text,
+              auctions.leading_bid_id::text,
+              (SELECT count(*)::text FROM bids WHERE auction_id = auctions.id) AS bid_count,
+              (SELECT count(*)::text FROM outbox_events WHERE auction_id = auctions.id) AS event_count
+       FROM auctions
+       WHERE auctions.id = $1`,
+      [auctionId],
+    );
+    expect(persisted.rows[0]).toEqual({
+      version: "1",
+      leading_bid_id: null,
+      bid_count: "0",
+      event_count: "0",
+    });
   });
 
   it("increments version by exactly one per accepted bid", async () => {

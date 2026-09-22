@@ -1,0 +1,180 @@
+import { randomUUID } from "node:crypto";
+
+import { Pool } from "pg";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+const databaseUrl = process.env.TEST_DATABASE_URL;
+
+interface OutboxEventInsert {
+  eventId: string;
+  eventType: string;
+  occurredAt: string;
+  auctionId: string;
+  auctionVersion: string;
+  payload: Record<string, unknown>;
+  publishedAt: string | null;
+}
+
+describe.skipIf(databaseUrl === undefined)("outbox PostgreSQL schema", () => {
+  let database: Pool;
+  let ownerId: string;
+  let auctionId: string;
+
+  function validEvent(overrides: Partial<OutboxEventInsert> = {}): OutboxEventInsert {
+    const eventId = overrides.eventId ?? randomUUID();
+    const eventType = overrides.eventType ?? "BidAccepted.v1";
+    const occurredAt = overrides.occurredAt ?? "2030-01-01T10:00:00.123456Z";
+    const eventAuctionId = overrides.auctionId ?? auctionId;
+    const auctionVersion = overrides.auctionVersion ?? "2";
+
+    return {
+      eventId,
+      eventType,
+      occurredAt,
+      auctionId: eventAuctionId,
+      auctionVersion,
+      payload: overrides.payload ?? {
+        eventId,
+        eventType,
+        occurredAt,
+        auctionId: eventAuctionId,
+        auctionVersion,
+        bidId: "10",
+        amountMinor: "1000",
+        currencyCode: "USD",
+      },
+      publishedAt: overrides.publishedAt ?? null,
+    };
+  }
+
+  async function insertEvent(overrides: Partial<OutboxEventInsert> = {}): Promise<string> {
+    const event = validEvent(overrides);
+    await database.query(
+      `INSERT INTO outbox_events (
+         event_id, event_type, occurred_at, auction_id, auction_version, payload, published_at
+       )
+       VALUES ($1::uuid, $2, $3::timestamptz, $4, $5, $6::jsonb, $7::timestamptz)`,
+      [
+        event.eventId,
+        event.eventType,
+        event.occurredAt,
+        event.auctionId,
+        event.auctionVersion,
+        JSON.stringify(event.payload),
+        event.publishedAt,
+      ],
+    );
+    return event.eventId;
+  }
+
+  beforeAll(() => {
+    database = new Pool({ connectionString: databaseUrl });
+  });
+
+  beforeEach(async () => {
+    const ownerResult = await database.query<{ id: string }>(
+      `INSERT INTO users (email, username, password_hash)
+       VALUES ($1, 'Outbox Owner', '$argon2id$test')
+       RETURNING id::text`,
+      [`outbox-schema-owner-${randomUUID()}@example.com`],
+    );
+    const owner = ownerResult.rows[0];
+    if (owner === undefined) throw new Error("owner fixture was not inserted");
+    ownerId = owner.id;
+
+    const auctionResult = await database.query<{ id: string }>(
+      `INSERT INTO auctions (
+         owner_id, title, description, currency_code, starts_at, ends_at,
+         starting_price_minor, minimum_bid_increment_minor
+       )
+       VALUES ($1, 'Outbox lot', 'An outbox schema fixture.', 'USD',
+               now(), now() + interval '1 hour', 1000, 100)
+       RETURNING id::text`,
+      [ownerId],
+    );
+    const auction = auctionResult.rows[0];
+    if (auction === undefined) throw new Error("auction fixture was not inserted");
+    auctionId = auction.id;
+  });
+
+  afterEach(async () => {
+    await database.query("DELETE FROM outbox_events WHERE auction_id = $1", [auctionId]);
+    await database.query("DELETE FROM auctions WHERE id = $1", [auctionId]);
+    await database.query("DELETE FROM users WHERE id = $1", [ownerId]);
+  });
+
+  afterAll(async () => {
+    await database.end();
+  });
+
+  it("allows publication state to change while event data remains immutable", async () => {
+    const eventId = await insertEvent();
+
+    await expect(
+      database.query(
+        "UPDATE outbox_events SET published_at = occurred_at WHERE event_id = $1::uuid",
+        [eventId],
+      ),
+    ).resolves.toMatchObject({ rowCount: 1 });
+
+    const immutableUpdates: [string, readonly unknown[]][] = [
+      ["payload = payload || '{\"extra\": true}'::jsonb", []],
+      ["auction_version = auction_version + 1", []],
+      ["occurred_at = occurred_at + interval '1 second'", []],
+      ["event_id = $2::uuid", [randomUUID()]],
+    ];
+    for (const [assignment, additionalValues] of immutableUpdates) {
+      await expect(
+        database.query(`UPDATE outbox_events SET ${assignment} WHERE event_id = $1::uuid`, [
+          eventId,
+          ...additionalValues,
+        ]),
+      ).rejects.toMatchObject({
+        code: "23000",
+        message: "outbox event data is immutable",
+      });
+    }
+  });
+
+  it("rejects publication timestamps before the event occurred", async () => {
+    await expect(insertEvent({ publishedAt: "2030-01-01T10:00:00.123455Z" })).rejects.toMatchObject(
+      {
+        code: "23514",
+        constraint: "outbox_events_published_at_check",
+      },
+    );
+  });
+
+  it("requires payload metadata to match the queryable columns", async () => {
+    const event = validEvent();
+    await expect(
+      insertEvent({
+        eventId: event.eventId,
+        payload: { ...event.payload, auctionVersion: "3" },
+      }),
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "outbox_events_payload_metadata_check",
+    });
+  });
+
+  it("prevents duplicate event types for the same auction version", async () => {
+    await insertEvent();
+
+    await expect(insertEvent()).rejects.toMatchObject({
+      code: "23505",
+      constraint: "outbox_events_auction_event_version_key",
+    });
+  });
+
+  it("indexes only unpublished events in claim order", async () => {
+    const result = await database.query<{ indexdef: string }>(
+      `SELECT indexdef
+       FROM pg_indexes
+       WHERE schemaname = 'public' AND indexname = 'outbox_events_unpublished_idx'`,
+    );
+
+    expect(result.rows[0]?.indexdef).toContain("(occurred_at, event_id)");
+    expect(result.rows[0]?.indexdef).toContain("WHERE (published_at IS NULL)");
+  });
+});
