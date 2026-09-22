@@ -88,6 +88,18 @@ The foreign key is composite, `(id, leading_bid_id)` referencing
 would let an auction point at another auction's bid and leave that invariant
 to writer discipline; the composite key makes PostgreSQL reject it.
 
+The auction-owned outbox migration adds `outbox_events`. Each row stores the
+immutable event JSON together with queryable event, auction, version, and
+occurrence metadata; constraints keep that metadata aligned with the payload.
+An update trigger makes the event identity, payload, and ordering metadata
+append-only while still allowing a publisher to set `published_at`.
+The unique auction/event/version constraint is a defensive guard against
+duplicate domain events. The partial `(occurred_at, event_id)` index contains
+only unpublished rows, allowing future concurrent publishers to claim ordered
+batches with `FOR UPDATE SKIP LOCKED` without scanning published history.
+`published_at` is the only delivery-state field and remains nullable until a
+publisher is implemented.
+
 Existing rows predate required title, currency, and bid-increment fields. The
 migration derives their title from the description and backfills `USD`, a
 one-minor-unit increment, version 1, and `updated_at = created_at`. Those

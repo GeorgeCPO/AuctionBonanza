@@ -15,6 +15,37 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+--
+-- Name: auction_reject_outbox_event_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.auction_reject_outbox_event_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(
+    NEW.event_id,
+    NEW.event_type,
+    NEW.occurred_at,
+    NEW.auction_id,
+    NEW.auction_version,
+    NEW.payload
+  ) IS DISTINCT FROM ROW(
+    OLD.event_id,
+    OLD.event_type,
+    OLD.occurred_at,
+    OLD.auction_id,
+    OLD.auction_version,
+    OLD.payload
+  ) THEN
+    RAISE EXCEPTION 'outbox event data is immutable'
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -135,6 +166,26 @@ CREATE TABLE public.identity_sessions (
 
 
 --
+-- Name: outbox_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.outbox_events (
+    event_id uuid NOT NULL,
+    event_type character varying(100) NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    auction_id bigint NOT NULL,
+    auction_version bigint NOT NULL,
+    payload jsonb NOT NULL,
+    published_at timestamp with time zone,
+    CONSTRAINT outbox_events_auction_version_check CHECK ((auction_version >= 1)),
+    CONSTRAINT outbox_events_event_type_check CHECK ((((event_type)::text = btrim((event_type)::text)) AND ((char_length((event_type)::text) >= 1) AND (char_length((event_type)::text) <= 100)))),
+    CONSTRAINT outbox_events_payload_metadata_check CHECK (((payload ?& ARRAY['eventId'::text, 'eventType'::text, 'occurredAt'::text, 'auctionId'::text, 'auctionVersion'::text]) AND ((payload ->> 'eventId'::text) = (event_id)::text) AND ((payload ->> 'eventType'::text) = (event_type)::text) AND (((payload ->> 'occurredAt'::text))::timestamp with time zone = occurred_at) AND ((payload ->> 'auctionId'::text) = (auction_id)::text) AND ((payload ->> 'auctionVersion'::text) = (auction_version)::text))),
+    CONSTRAINT outbox_events_payload_object_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT outbox_events_published_at_check CHECK (((published_at IS NULL) OR (published_at >= occurred_at)))
+);
+
+
+--
 -- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -227,6 +278,22 @@ ALTER TABLE ONLY public.identity_sessions
 
 
 --
+-- Name: outbox_events outbox_events_auction_event_version_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.outbox_events
+    ADD CONSTRAINT outbox_events_auction_event_version_key UNIQUE (auction_id, event_type, auction_version);
+
+
+--
+-- Name: outbox_events outbox_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.outbox_events
+    ADD CONSTRAINT outbox_events_pkey PRIMARY KEY (event_id);
+
+
+--
 -- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -313,10 +380,24 @@ CREATE INDEX identity_sessions_user_id_idx ON public.identity_sessions USING btr
 
 
 --
+-- Name: outbox_events_unpublished_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX outbox_events_unpublished_idx ON public.outbox_events USING btree (occurred_at, event_id) WHERE (published_at IS NULL);
+
+
+--
 -- Name: users_email_case_insensitive_key; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX users_email_case_insensitive_key ON public.users USING btree (lower((email)::text));
+
+
+--
+-- Name: outbox_events outbox_events_immutable_event_data; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER outbox_events_immutable_event_data BEFORE UPDATE ON public.outbox_events FOR EACH ROW EXECUTE FUNCTION public.auction_reject_outbox_event_mutation();
 
 
 --
@@ -376,6 +457,14 @@ ALTER TABLE ONLY public.identity_sessions
 
 
 --
+-- Name: outbox_events outbox_events_auction_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.outbox_events
+    ADD CONSTRAINT outbox_events_auction_id_fkey FOREIGN KEY (auction_id) REFERENCES public.auctions(id);
+
+
+--
 -- PostgreSQL database dump complete
 --
 
@@ -392,4 +481,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260903170000'),
     ('20260907120000'),
     ('20260907150000'),
-    ('20260908073852');
+    ('20260908073852'),
+    ('20260922090000');

@@ -88,9 +88,12 @@ and time in the next.
   be timestamped later than the mutation it caused.
 - An accepted bid is immutable: a bid that doesn't qualify is never
   persisted. Acceptance sets `auctions.leading_bid_id` to the new bid and
-  increments `version`, in the same transaction as the insert. A composite
-  foreign key ensures `leading_bid_id` can only reference a bid on that same
-  auction.
+  increments `version`, then appends one immutable `BidAccepted.v1` payload to
+  `outbox_events`, in the same transaction as the bid insert. All three writes
+  commit together or all roll back. The event reuses the acceptance timestamp
+  and resulting auction version. Rejections and idempotency replays return
+  before these writes, so they never append another event. A composite foreign
+  key ensures `leading_bid_id` can only reference a bid on that same auction.
 - A client-supplied `idempotencyKey`, scoped to (auction, bidder, key), lets a
   retried request return the original outcome instead of being re-evaluated
   against a since-changed price or phase. This closes a real gap: a dropped

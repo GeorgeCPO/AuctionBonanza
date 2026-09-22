@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+
+import { BID_ACCEPTED_V1_EVENT_TYPE, parseBidAcceptedV1 } from "@auction-bonanza/contracts";
+
 import { derivePhase, type AuctionPhase } from "../auctions/auction.js";
 import type { Database, DatabaseClient } from "../database.js";
 import type { Bid } from "./bid.js";
@@ -18,6 +22,7 @@ interface AuctionLockRow extends Record<string, unknown> {
   ends_at: Date;
   starting_price_minor: string;
   minimum_bid_increment_minor: string;
+  currency_code: string;
   version: string;
   cancelled_at: Date | null;
   closed_at: Date | null;
@@ -100,6 +105,7 @@ export class PostgresBidRepository implements BidRepository {
            auctions.ends_at,
            auctions.starting_price_minor::text AS starting_price_minor,
            auctions.minimum_bid_increment_minor::text AS minimum_bid_increment_minor,
+           auctions.currency_code,
            auctions.version::text AS version,
            auctions.cancelled_at,
            auctions.closed_at,
@@ -220,6 +226,31 @@ export class PostgresBidRepository implements BidRepository {
         | { version: string; updated_at: Date }
         | undefined;
       if (updatedAuctionRow === undefined) throw new Error("Updated auction was not returned");
+
+      const event = parseBidAcceptedV1({
+        eventId: randomUUID(),
+        eventType: BID_ACCEPTED_V1_EVENT_TYPE,
+        occurredAt: auctionRow.observed_at_text,
+        auctionId: input.auctionId,
+        auctionVersion: updatedAuctionRow.version,
+        bidId: bidRow.id,
+        amountMinor: bidRow.amount_minor,
+        currencyCode: auctionRow.currency_code,
+      });
+      await client.query(
+        `INSERT INTO outbox_events (
+           event_id, event_type, occurred_at, auction_id, auction_version, payload
+         )
+         VALUES ($1::uuid, $2, $3::timestamptz, $4, $5, $6::jsonb)`,
+        [
+          event.eventId,
+          event.eventType,
+          event.occurredAt,
+          event.auctionId,
+          event.auctionVersion,
+          JSON.stringify(event),
+        ],
+      );
 
       await client.query("COMMIT");
       committed = true;
