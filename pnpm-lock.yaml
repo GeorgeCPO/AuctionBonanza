@@ -37,6 +37,19 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3))
 
+  packages/contracts:
+    dependencies:
+      '@sinclair/typebox':
+        specifier: 0.34.52
+        version: 0.34.52
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3))
+
   packages/http-routing:
     devDependencies:
       '@types/node':
@@ -57,6 +70,9 @@ importers:
       '@auction-bonanza/access-auth':
         specifier: workspace:*
         version: link:../../packages/access-auth
+      '@auction-bonanza/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@auction-bonanza/http-routing':
         specifier: workspace:*
         version: link:../../packages/http-routing
