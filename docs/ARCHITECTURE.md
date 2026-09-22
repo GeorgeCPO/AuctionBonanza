@@ -36,7 +36,11 @@ Client
   `-- SSE live updates <-- realtime-gateway
 ```
 
-Bid acceptance starts as a synchronous operation in `auction-service`. The database transaction will eventually validate the auction, persist the accepted bid and resulting state, and write an outbox event atomically. Kafka propagates committed outcomes to other services; it is not initially used as request-response transport.
+Bid acceptance is a synchronous operation in `auction-service`. For an
+accepted bid, one database transaction validates the auction, persists the bid
+and resulting auction state, and appends its outbox event atomically. Kafka
+will propagate committed outcomes to other services; it is not used as
+request-response transport.
 
 ## Technology choices
 
@@ -77,8 +81,11 @@ Even while the database is shared, table writes should have a clear owning servi
 - Use the promisified API from `@confluentinc/kafka-javascript`.
 - Use Kafka for asynchronous domain events, projections, notifications, settlement workflows, and replay.
 - Assume messages may be delivered more than once. Consumers must make required side effects idempotent.
-- Introduce a transactional outbox for PostgreSQL-to-Kafka publication and processed-event records for consumers that update PostgreSQL.
-- Give events stable metadata including `event_id`, `event_type`, `event_version`, `aggregate_id`, and `occurred_at`.
+- Use a transactional outbox for PostgreSQL-to-Kafka publication. Add
+  processed-event records when consumers begin updating PostgreSQL.
+- Give events stable metadata. Current JSON contracts use `eventId`, a
+  versioned `eventType` such as `BidAccepted.v1`, `auctionId` as the aggregate
+  identifier, `auctionVersion` as its ordered sequence, and `occurredAt`.
 - Initially key auction-related events by `auction_id` so ordering is preserved within an auction. Hot-auction behavior will be measured and revisited deliberately.
 
 Start with versioned JSON event schemas in `packages/contracts`. A schema registry and another encoding such as Avro or Protobuf can be introduced later as a separate compatibility exercise.
