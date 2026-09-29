@@ -18,5 +18,71 @@ services:
       # Mount the parent directory as required by the official image.
       - postgres18_data:/var/lib/postgresql
 
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      # Single combined broker/controller node in KRaft mode (no ZooKeeper).
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Containers reach the broker as kafka:29092; host processes (services
+      # started with pnpm, integration tests) use localhost:9092.
+      #
+      # FAULT_INJECTION is a test-only listener. The broker accepts it on
+      # container port 19093 (published as localhost:19093) but advertises
+      # localhost:19092, where an integration test runs a TCP proxy. Clients
+      # bootstrapped through the proxy are told to keep using the proxy, so the
+      # test can cut and restore every broker connection. A proxy in front of
+      # PLAINTEXT_HOST would be bypassed after the first metadata response.
+      KAFKA_LISTENERS: PLAINTEXT://:29092,CONTROLLER://:29093,PLAINTEXT_HOST://:9092,FAULT_INJECTION://:19093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092,FAULT_INJECTION://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,FAULT_INJECTION:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Fixed local-only cluster ID so the persisted log directory can be reused.
+      CLUSTER_ID: AGesiUE5QYaSe28NuBc3cg
+      # Topics are provisioned explicitly by kafka-init. A typo in a topic name
+      # must fail loudly instead of silently creating a one-partition topic.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # A single broker can only host one replica of anything.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "9092:9092"
+      - "19093:19093"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 > /dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+    volumes:
+      - kafka43_data:/var/lib/kafka/data
+
+  # One-shot topic provisioning. `--if-not-exists` makes it safe to rerun; it
+  # does not change the partition count of an existing topic.
+  kafka-init:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists
+        --topic auction.events --partitions 12 --replication-factor 1
+        --config min.insync.replicas=1 --config cleanup.policy=delete --config retention.ms=604800000 &&
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --describe --topic auction.events
+    restart: "no"
+
 volumes:
   postgres18_data:
+  kafka43_data:

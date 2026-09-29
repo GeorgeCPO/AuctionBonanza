@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -25,7 +25,8 @@ describe.skipIf(databaseUrl === undefined)("outbox PostgreSQL schema", () => {
     const eventType = overrides.eventType ?? "BidAccepted.v1";
     const occurredAt = overrides.occurredAt ?? "2030-01-01T10:00:00.123456Z";
     const eventAuctionId = overrides.auctionId ?? auctionId;
-    const auctionVersion = overrides.auctionVersion ?? "2";
+    // A fresh fixture auction is at version 1, the only version it accepts.
+    const auctionVersion = overrides.auctionVersion ?? "1";
 
     return {
       eventId,
@@ -47,9 +48,12 @@ describe.skipIf(databaseUrl === undefined)("outbox PostgreSQL schema", () => {
     };
   }
 
-  async function insertEvent(overrides: Partial<OutboxEventInsert> = {}): Promise<string> {
+  async function insertEvent(
+    overrides: Partial<OutboxEventInsert> = {},
+    queryable: Pool | PoolClient = database,
+  ): Promise<string> {
     const event = validEvent(overrides);
-    await database.query(
+    await queryable.query(
       `INSERT INTO outbox_events (
          event_id, event_type, occurred_at, auction_id, auction_version, payload, published_at
        )
@@ -158,13 +162,57 @@ describe.skipIf(databaseUrl === undefined)("outbox PostgreSQL schema", () => {
     });
   });
 
-  it("prevents duplicate event types for the same auction version", async () => {
+  it("allows exactly one event per auction version, whatever its type", async () => {
     await insertEvent();
 
     await expect(insertEvent()).rejects.toMatchObject({
       code: "23505",
-      constraint: "outbox_events_auction_event_version_key",
+      constraint: "outbox_events_auction_version_key",
     });
+    // Two types at one version would have no defined publication order.
+    await expect(insertEvent({ eventType: "AuctionCancelled.v1" })).rejects.toMatchObject({
+      code: "23505",
+      constraint: "outbox_events_auction_version_key",
+    });
+  });
+
+  it("accepts only events for the auction's current version", async () => {
+    for (const auctionVersion of ["2", "3"]) {
+      await expect(insertEvent({ auctionVersion })).rejects.toMatchObject({
+        code: "23514",
+        constraint: "outbox_events_current_auction_version",
+      });
+    }
+
+    await database.query("UPDATE auctions SET version = 3 WHERE id = $1", [auctionId]);
+    for (const auctionVersion of ["1", "2"]) {
+      await expect(insertEvent({ auctionVersion })).rejects.toMatchObject({
+        code: "23514",
+        constraint: "outbox_events_current_auction_version",
+      });
+    }
+    await expect(insertEvent({ auctionVersion: "3" })).resolves.toBeTypeOf("string");
+  });
+
+  it("holds the auction row lock from the event insert until commit", async () => {
+    const writer = await database.connect();
+    const competitor = await database.connect();
+    try {
+      await writer.query("BEGIN");
+      await insertEvent({}, writer);
+
+      // Any other writer for this auction (which must lock it to bump its
+      // version) waits until the event's transaction has committed.
+      await expect(
+        competitor.query("SELECT 1 FROM auctions WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [
+          auctionId,
+        ]),
+      ).rejects.toMatchObject({ code: "55P03" });
+    } finally {
+      await writer.query("ROLLBACK");
+      writer.release();
+      competitor.release();
+    }
   });
 
   it("indexes only unpublished events in claim order", async () => {
