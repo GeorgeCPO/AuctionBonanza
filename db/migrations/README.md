@@ -19,7 +19,9 @@ database change. Use `pnpm db:dump` to regenerate it without changing the
 database. Schema generation requires a PostgreSQL `pg_dump` executable on
 `PATH`; its major version should be at least as new as the database server's.
 The explicit dump makes the command fail visibly instead of silently leaving a
-stale snapshot when the client tool is missing.
+stale snapshot when the client tool is missing. To use the Compose postgres
+container's `pg_dump` instead, as CI does, run
+`PATH="$PWD/scripts/compose-bin:$PATH" pnpm db:migrate`.
 
 Use `pnpm db:new <owner>__<change>` to create a migration. Dbmate requires a
 leading numeric version, so committed files follow
