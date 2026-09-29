@@ -3,6 +3,7 @@ packages:
   - "packages/*"
 
 allowBuilds:
+  "@confluentinc/kafka-javascript": true
   esbuild: true
 
 minimumReleaseAgeExclude:

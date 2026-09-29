@@ -38,9 +38,13 @@ Client
 
 Bid acceptance is a synchronous operation in `auction-service`. For an
 accepted bid, one database transaction validates the auction, persists the bid
-and resulting auction state, and appends its outbox event atomically. Kafka
-will propagate committed outcomes to other services; it is not used as
-request-response transport.
+and resulting auction state, and appends its outbox event atomically. A
+separate outbox publisher worker, owned by `auction-service`, sends committed
+events to Kafka. Kafka propagates committed outcomes to other services; it is
+not used as request-response transport. Publication is at-least-once, with
+per-auction ordering enforced by the publisher's claim query. See
+[`OUTBOX_PUBLISHING.md`](OUTBOX_PUBLISHING.md) for the exact guarantees and
+failure behavior.
 
 ## Technology choices
 
@@ -87,6 +91,8 @@ Even while the database is shared, table writes should have a clear owning servi
   versioned `eventType` such as `BidAccepted.v1`, `auctionId` as the aggregate
   identifier, `auctionVersion` as its ordered sequence, and `occurredAt`.
 - Initially key auction-related events by `auction_id` so ordering is preserved within an auction. Hot-auction behavior will be measured and revisited deliberately.
+- Publish all auction events to one topic, `auction.events`, so different event types of one auction share a partition and a single order. Topics are provisioned explicitly; automatic topic creation is disabled.
+- Hold outbox row locks through Kafka publication and mark events published only after an `acks=all` acknowledgement. This trades one PostgreSQL connection per publication loop for clean normal-case ordering; the lease-based alternative is discussed in [`OUTBOX_PUBLISHING.md`](OUTBOX_PUBLISHING.md).
 
 Start with versioned JSON event schemas in `packages/contracts`. A schema registry and another encoding such as Avro or Protobuf can be introduced later as a separate compatibility exercise.
 

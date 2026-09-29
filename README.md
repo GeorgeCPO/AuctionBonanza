@@ -33,7 +33,7 @@ resulting `pnpm-lock.yaml` change.
 ```sh
 pnpm install
 pnpm check
-docker compose up -d postgres
+docker compose up -d postgres kafka kafka-init
 cp .env.example .env
 pnpm db:migrate
 pnpm auth:keys:local local-2026-09
@@ -43,10 +43,49 @@ Use `pnpm format` to apply repository formatting, `pnpm format:check` to verify
 it without writing files, and `pnpm lint` for type-aware linting. `pnpm check`
 runs formatting, linting, type checks, tests, and production builds.
 
-The Compose stack currently contains PostgreSQL only. It runs
+The Compose stack contains PostgreSQL and a single-node Kafka. PostgreSQL runs
 `postgres:18.6-bookworm` to match the planned Amazon RDS for PostgreSQL 18.6
 engine version, and exposes the local `auction_db` database on port `5432`
 using the development-only credentials in `docker-compose.yml`.
+
+Kafka runs `apache/kafka:4.3.1` in KRaft mode (combined broker and controller,
+no ZooKeeper) with data in the `kafka43_data` volume. Host processes connect to
+`localhost:9092`; containers use `kafka:29092`. Its health check waits until
+the broker answers API requests. Automatic topic creation is disabled, so the
+one-shot `kafka-init` service provisions topics explicitly once Kafka is
+healthy:
+
+| Topic            | Partitions | Key         | Retention |
+| ---------------- | ---------- | ----------- | --------- |
+| `auction.events` | 12         | `auctionId` | 7 days    |
+
+`kafka-init` is idempotent (`--if-not-exists`) and exits after printing the
+topic description; rerun it with `docker compose up kafka-init`. It never
+changes the partition count of an existing topic: adding partitions remaps keys
+and would break per-auction ordering for in-flight data, so it must be a
+deliberate operation. Inspect topics with:
+
+```sh
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic auction.events
+```
+
+The broker also exposes a test-only `FAULT_INJECTION` listener on
+`localhost:19093` that advertises `localhost:19092`, where the Kafka outage
+integration test runs a TCP proxy. Nothing else should use it.
+
+Integration tests are skipped unless their infrastructure is configured:
+
+```sh
+TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
+TEST_KAFKA_BROKERS=localhost:9092 \
+TEST_KAFKA_FAULT_INJECTION_UPSTREAM=localhost:19093 \
+pnpm --filter @auction-bonanza/auction-service test
+```
+
+The outbox publisher tests create and drop their own temporary databases from
+`db/schema.sql` (so the database user needs `CREATEDB`), and their own Kafka
+topics. `TEST_KAFKA_FAULT_INJECTION_UPSTREAM` enables only the broker outage
+test.
 
 Database migrations are owned centrally because the initial services share
 `auction_db`. Use `pnpm db:status`, `pnpm db:migrate`, and `pnpm db:rollback`
@@ -79,3 +118,15 @@ cp services/auction-service/.env.example services/auction-service/.env
 pnpm --filter @auction-bonanza/auction-service build
 pnpm --filter @auction-bonanza/auction-service start:local
 ```
+
+Accepted bids reach Kafka through the auction service's separate outbox
+publisher worker:
+
+```sh
+cp services/auction-service/.env.outbox-publisher.example services/auction-service/.env.outbox-publisher
+pnpm --filter @auction-bonanza/auction-service build
+pnpm --filter @auction-bonanza/auction-service start:outbox-publisher:local
+```
+
+Its delivery and ordering guarantees are described in
+[`docs/OUTBOX_PUBLISHING.md`](docs/OUTBOX_PUBLISHING.md).
