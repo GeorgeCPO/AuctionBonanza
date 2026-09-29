@@ -3,7 +3,7 @@ import type { preHandlerAsyncHookHandler } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import type { Auction } from "../src/auctions/auction.js";
+import type { Auction, AuctionLiveState } from "../src/auctions/auction.js";
 import { AuctionService, type AuctionServicePort } from "../src/auctions/auction.service.js";
 import type { AuctionRepository } from "../src/auctions/auction.repository.js";
 import type { Bid } from "../src/bids/bid.js";
@@ -46,6 +46,17 @@ const auction: Auction = {
   createdAt: new Date("2029-12-01T10:00:00.000Z"),
   updatedAt: new Date("2029-12-01T10:00:00.000Z"),
   phase: "scheduled",
+};
+const liveState: AuctionLiveState = {
+  auctionId: "91",
+  auctionVersion: "3",
+  currencyCode: "USD",
+  startsAt: new Date("2030-01-01T10:00:00.000Z"),
+  endsAt: new Date("2030-01-01T11:00:00.000Z"),
+  cancelledAt: null,
+  closedAt: null,
+  phase: "open",
+  leadingBid: { bidId: "501", amountMinor: "1200" },
 };
 const validPayload = {
   title: "Vintage clock",
@@ -93,6 +104,10 @@ function makeAuctions(overrides: Partial<AuctionServicePort> = {}): AuctionServi
       kind: "found",
       page: { items: [auction], nextCursor: null },
     })),
+    findLiveStates: vi.fn<AuctionServicePort["findLiveStates"]>(async () => ({
+      kind: "found",
+      liveStates: { items: [], missingIds: [], observedAt: new Date() },
+    })),
     ...overrides,
   };
 }
@@ -136,6 +151,7 @@ describe("auction HTTP API", () => {
       create: vi.fn<AuctionRepository["create"]>(),
       findById: vi.fn<AuctionRepository["findById"]>(),
       list,
+      findLiveStates: vi.fn<AuctionRepository["findLiveStates"]>(),
     };
     const deny = vi.fn<preHandlerAsyncHookHandler>(async (_request, reply) =>
       reply.code(401).send({ code: "UNAUTHORIZED" }),
@@ -383,6 +399,96 @@ describe("auction HTTP API", () => {
       code: "INVALID_REQUEST",
       message: "Request validation failed",
     });
+  });
+});
+
+describe("auction live-state HTTP API", () => {
+  function makeLiveStateApp(states: AuctionLiveState[] = []) {
+    const findLiveStates = vi.fn<AuctionRepository["findLiveStates"]>(async () => ({
+      states,
+      observedAt: new Date("2030-01-01T10:30:00.000Z"),
+    }));
+    const findById = vi.fn<AuctionRepository["findById"]>();
+    const repository: AuctionRepository = {
+      create: vi.fn<AuctionRepository["create"]>(),
+      findById,
+      list: vi.fn<AuctionRepository["list"]>(),
+      findLiveStates,
+    };
+    const deny = vi.fn<preHandlerAsyncHookHandler>(async (_request, reply) =>
+      reply.code(401).send({ code: "UNAUTHORIZED" }),
+    );
+    const app = makeApp(new AuctionService(repository, ["USD"]), deny);
+    return { app, findLiveStates, findById, deny };
+  }
+
+  it("returns live states publicly in request order and lists missing auctions", async () => {
+    const other: AuctionLiveState = {
+      ...liveState,
+      auctionId: "7",
+      auctionVersion: "1",
+      leadingBid: null,
+    };
+    const { app, findLiveStates, findById, deny } = makeLiveStateApp([other, liveState]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/auctions/live-states?ids=91,404,7,91",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      items: [
+        {
+          ...liveState,
+          startsAt: "2030-01-01T10:00:00.000Z",
+          endsAt: "2030-01-01T11:00:00.000Z",
+        },
+        {
+          ...other,
+          startsAt: "2030-01-01T10:00:00.000Z",
+          endsAt: "2030-01-01T11:00:00.000Z",
+        },
+      ],
+      missingIds: ["404"],
+      observedAt: "2030-01-01T10:30:00.000Z",
+    });
+    // Repeated IDs are read once; the static segment never reaches /:id.
+    expect(findLiveStates).toHaveBeenCalledWith(["91", "404", "7"]);
+    expect(findById).not.toHaveBeenCalled();
+    expect(deny).not.toHaveBeenCalled();
+  });
+
+  it("accepts the maximum number of IDs", async () => {
+    const { app, findLiveStates } = makeLiveStateApp();
+    const ids = Array.from({ length: 100 }, (_, index) => `922337203685477${5707 - index}`);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/auctions/live-states?ids=${ids.join(",")}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(findLiveStates).toHaveBeenCalledWith(ids);
+  });
+
+  it.each([
+    ["missing ids", ""],
+    ["an empty list", "?ids="],
+    ["an empty element", "?ids=1,,2"],
+    ["a trailing separator", "?ids=1,"],
+    ["a non-numeric ID", "?ids=1,abc"],
+    ["a zero ID", "?ids=0"],
+    ["an ID above the bigint range", "?ids=9223372036854775808"],
+    ["too many IDs", `?ids=${Array.from({ length: 101 }, (_, index) => index + 1).join(",")}`],
+  ])("rejects %s before reading", async (_case, query) => {
+    const { app, findLiveStates } = makeLiveStateApp();
+
+    const response = await app.inject({ method: "GET", url: `/v1/auctions/live-states${query}` });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(findLiveStates).not.toHaveBeenCalled();
   });
 });
 

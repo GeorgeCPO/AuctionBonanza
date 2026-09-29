@@ -34,7 +34,7 @@ resulting `pnpm-lock.yaml` change.
 ```sh
 pnpm install
 pnpm check
-docker compose up -d postgres kafka kafka-init
+docker compose up -d postgres kafka kafka-init valkey-init
 cp .env.example .env
 pnpm db:migrate
 pnpm auth:keys:local local-2026-09
@@ -44,7 +44,8 @@ Use `pnpm format` to apply repository formatting, `pnpm format:check` to verify
 it without writing files, and `pnpm lint` for type-aware linting. `pnpm check`
 runs formatting, linting, type checks, tests, and production builds.
 
-The Compose stack contains PostgreSQL and a single-node Kafka. PostgreSQL runs
+The Compose stack contains PostgreSQL, a single-node Kafka, and a three-node
+Valkey cluster. PostgreSQL runs
 `postgres:18.6-bookworm` to match the planned Amazon RDS for PostgreSQL 18.6
 engine version, and exposes the local `auction_db` database on port `5432`
 using the development-only credentials in `docker-compose.yml`.
@@ -74,6 +75,23 @@ The broker also exposes a test-only `FAULT_INJECTION` listener on
 `localhost:19093` that advertises `localhost:19092`, where the Kafka outage
 integration test runs a TCP proxy. Nothing else should use it.
 
+Valkey runs `valkey/valkey:9.0.6`, matching Amazon ElastiCache for Valkey 9.0,
+as the realtime gateway's pub/sub bus (see
+[`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md)). It runs in cluster
+mode with three primaries and no replicas on `localhost:7001`–`7003`. Each node
+announces the hostname `localhost`, so host processes can follow the endpoints
+in `CLUSTER SHARDS` replies and `MOVED` redirects; containers cannot use them
+yet. There is no persistence: the bus carries only pub/sub traffic, and cluster
+membership lives in memory. The one-shot `valkey-init` service forms the
+cluster once all three nodes are healthy. It changes nothing when the nodes
+already form one cluster covering every slot. Otherwise, for example after a
+node restarted blank, it resets all three and forms the cluster again. Rerun it
+with `docker compose up valkey-init`, and inspect the cluster with:
+
+```sh
+docker compose exec valkey-1 valkey-cli -p 7001 cluster shards
+```
+
 Integration tests are skipped unless their infrastructure is configured:
 
 ```sh
@@ -81,6 +99,9 @@ TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
 TEST_KAFKA_BROKERS=localhost:9092 \
 TEST_KAFKA_FAULT_INJECTION_UPSTREAM=localhost:19093 \
 pnpm --filter @auction-bonanza/auction-service test
+
+TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
+pnpm --filter @auction-bonanza/realtime-gateway test
 ```
 
 The outbox publisher tests create and drop their own temporary databases from
@@ -93,8 +114,9 @@ test.
 GitHub Actions (`.github/workflows/ci.yml`) runs one job on every pull request
 and on pushes to `master`:
 
-1. Starts `postgres` and `kafka` from the root `docker-compose.yml`, waits for
-   their health checks, and requires the one-shot `kafka-init` to exit with 0.
+1. Starts `postgres`, `kafka`, and the three Valkey nodes from the root
+   `docker-compose.yml`, waits for their health checks, and requires the
+   one-shot `kafka-init` and `valkey-init` to exit with 0.
 2. Installs with `pnpm install --frozen-lockfile` and checks that the native
    Kafka client (librdkafka) loads.
 3. Runs `pnpm db:migrate`, which regenerates `db/schema.sql` with `pg_dump`
@@ -105,20 +127,21 @@ and on pushes to `master`:
    test runs, including the Kafka outage test.
 
 Integration tests still skip themselves locally when their variables are
-unset. When `CI=true`, the auction and identity service Vitest configurations
+unset. When `CI=true`, the auction, identity, and realtime gateway Vitest configurations
 instead fail before running any test if a variable they need is missing.
 
 To reproduce the CI run locally (port `19092` must be free):
 
 ```sh
-docker compose up --detach --wait postgres kafka
-docker compose up kafka-init
+docker compose up --detach --wait postgres kafka valkey-1 valkey-2 valkey-3
+docker compose up kafka-init valkey-init
 PATH="$PWD/scripts/compose-bin:$PATH" pnpm db:migrate
 git diff --exit-code --ignore-matching-lines='^-- Dumped (from|by) ' -- db/schema.sql
 CI=true \
 TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
 TEST_KAFKA_BROKERS=localhost:9092 \
 TEST_KAFKA_FAULT_INJECTION_UPSTREAM=localhost:19093 \
+TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
 pnpm check
 ```
 

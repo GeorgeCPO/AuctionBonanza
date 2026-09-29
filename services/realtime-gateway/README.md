@@ -6,3 +6,6 @@ Its initial responsibility is consuming committed auction events and delivering 
 
 The current entry point is intentionally minimal. Event consumption, SSE
 delivery, and runtime configuration will be added in later milestones.
+
+The proposed relay/edge design is in
+[`docs/REALTIME_GATEWAY.md`](../../docs/REALTIME_GATEWAY.md).

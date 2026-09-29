@@ -1,5 +1,5 @@
 import type { Database } from "../database.js";
-import { derivePhase, type Auction } from "./auction.js";
+import { derivePhase, type Auction, type AuctionLiveState } from "./auction.js";
 
 interface AuctionRow extends Record<string, unknown> {
   id: string;
@@ -50,6 +50,24 @@ export interface AuctionListEntry {
   cursor: AuctionListCursor;
 }
 
+interface AuctionLiveStateRow extends Record<string, unknown> {
+  auction_id: string | null;
+  auction_version: string | null;
+  currency_code: string | null;
+  starts_at: Date | null;
+  ends_at: Date | null;
+  cancelled_at: Date | null;
+  closed_at: Date | null;
+  leading_bid_id: string | null;
+  leading_bid_amount_minor: string | null;
+  observed_at: Date;
+}
+
+export interface AuctionLiveStatesSnapshot {
+  states: AuctionLiveState[];
+  observedAt: Date;
+}
+
 export type AuctionCreationPersistenceOutcome =
   | { kind: "created"; auction: Auction }
   | { kind: "invalid_schedule" };
@@ -58,6 +76,7 @@ export interface AuctionRepository {
   create(request: PersistAuctionCreation): Promise<AuctionCreationPersistenceOutcome>;
   findById(id: string): Promise<Auction | undefined>;
   list(query: ListAuctionsQuery): Promise<AuctionListEntry[]>;
+  findLiveStates(ids: readonly string[]): Promise<AuctionLiveStatesSnapshot>;
 }
 
 // Shared by create/findById/list, which all read the same auction columns
@@ -184,6 +203,42 @@ export class PostgresAuctionRepository implements AuctionRepository {
     });
   }
 
+  async findLiveStates(ids: readonly string[]): Promise<AuctionLiveStatesSnapshot> {
+    // One statement, so every row comes from one snapshot. Each auction's
+    // version and leading_bid_id are read from the same row version, and the
+    // referenced bid is immutable, so a state can never pair one version with
+    // the leading bid of another. The observed instant is the outer row so
+    // that it is returned even when no requested auction exists.
+    const result = await this.database.query(
+      `SELECT auctions.id::text AS auction_id,
+              auctions.version::text AS auction_version,
+              auctions.currency_code,
+              auctions.starts_at,
+              auctions.ends_at,
+              auctions.cancelled_at,
+              auctions.closed_at,
+              bids.id::text AS leading_bid_id,
+              bids.amount_minor::text AS leading_bid_amount_minor,
+              observed.at AS observed_at
+       FROM (SELECT clock_timestamp() AS at) AS observed
+       LEFT JOIN (
+         auctions
+         LEFT JOIN bids ON bids.id = auctions.leading_bid_id
+       ) ON auctions.id = ANY($1::bigint[])`,
+      [ids],
+    );
+    const rows = result.rows as AuctionLiveStateRow[];
+    const observedAt = rows[0]?.observed_at;
+    if (observedAt === undefined) throw new Error("Live-state query returned no rows");
+
+    const states: AuctionLiveState[] = [];
+    for (const row of rows) {
+      if (row.auction_id === null) continue;
+      states.push(this.mapLiveState(row, observedAt));
+    }
+    return { states, observedAt };
+  }
+
   private mapAuction(row: AuctionRow): Auction {
     const phase = derivePhase(
       {
@@ -211,6 +266,45 @@ export class PostgresAuctionRepository implements AuctionRepository {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       phase,
+    };
+  }
+
+  private mapLiveState(row: AuctionLiveStateRow, observedAt: Date): AuctionLiveState {
+    const { auction_id, auction_version, currency_code, starts_at, ends_at } = row;
+    if (
+      auction_id === null ||
+      auction_version === null ||
+      currency_code === null ||
+      starts_at === null ||
+      ends_at === null
+    ) {
+      throw new Error("Live-state row is missing auction columns");
+    }
+
+    const phase = derivePhase(
+      {
+        cancelledAt: row.cancelled_at,
+        closedAt: row.closed_at,
+        startsAt: starts_at,
+        endsAt: ends_at,
+      },
+      observedAt,
+    );
+    const leadingBid =
+      row.leading_bid_id === null || row.leading_bid_amount_minor === null
+        ? null
+        : { bidId: row.leading_bid_id, amountMinor: row.leading_bid_amount_minor };
+
+    return {
+      auctionId: auction_id,
+      auctionVersion: auction_version,
+      currencyCode: currency_code,
+      startsAt: starts_at,
+      endsAt: ends_at,
+      cancelledAt: row.cancelled_at,
+      closedAt: row.closed_at,
+      phase,
+      leadingBid,
     };
   }
 }

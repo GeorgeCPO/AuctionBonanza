@@ -23,14 +23,15 @@ jobs:
       TEST_DATABASE_URL: postgresql://auction:auction_local@localhost:5432/auction_db
       TEST_KAFKA_BROKERS: localhost:9092
       TEST_KAFKA_FAULT_INJECTION_UPSTREAM: localhost:19093
+      TEST_VALKEY_NODES: localhost:7001,localhost:7002,localhost:7003
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # Started first so the broker boots while dependencies install.
-      - name: Start PostgreSQL and Kafka
-        run: docker compose up --detach postgres kafka
+      # Started first so the broker and cluster boot while dependencies install.
+      - name: Start PostgreSQL, Kafka and Valkey
+        run: docker compose up --detach postgres kafka valkey-1 valkey-2 valkey-3
 
       # Version comes from the packageManager field in package.json.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -53,17 +54,20 @@ jobs:
           if (!kafka.librdkafkaVersion) throw new Error("librdkafka binding did not load");
           console.log(`librdkafka ${kafka.librdkafkaVersion}`);'
 
-      - name: Wait for PostgreSQL, Kafka and topic provisioning
+      - name: Wait for infrastructure, topic provisioning and cluster formation
         run: |
-          docker compose up --detach --wait postgres kafka
-          # kafka-init is one-shot: wait for it to exit and require success.
-          docker compose up --detach kafka-init
-          exit_code="$(docker wait "$(docker compose ps --all --quiet kafka-init)")"
-          docker compose logs --no-color kafka-init
-          if [ "$exit_code" != "0" ]; then
-            echo "::error::kafka-init exited with code $exit_code"
-            exit 1
-          fi
+          docker compose up --detach --wait postgres kafka valkey-1 valkey-2 valkey-3
+          # kafka-init and valkey-init are one-shot: wait for each to exit and
+          # require success.
+          for init in kafka-init valkey-init; do
+            docker compose up --detach "$init"
+            exit_code="$(docker wait "$(docker compose ps --all --quiet "$init")")"
+            docker compose logs --no-color "$init"
+            if [ "$exit_code" != "0" ]; then
+              echo "::error::$init exited with code $exit_code"
+              exit 1
+            fi
+          done
           # The outage test runs its own proxy on the port the broker's
           # FAULT_INJECTION listener advertises.
           if ss --listening --tcp --numeric | grep --quiet ':19092 '; then
@@ -91,4 +95,5 @@ jobs:
         if: failure()
         run: |
           docker compose ps --all
-          docker compose logs --no-color --timestamps postgres kafka kafka-init
+          docker compose logs --no-color --timestamps postgres kafka kafka-init \
+            valkey-1 valkey-2 valkey-3 valkey-init

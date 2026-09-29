@@ -126,6 +126,15 @@ holds a stronger `FOR UPDATE` lock, so the trigger's lock is a no-op there.
 foreign-key checks take, so inserting bids is not blocked. The trigger checks
 only new inserts; rows existing before the migration are not re-validated.
 
+The contiguous-version migration enforces the converse of the outbox
+sequence rule: every change to `auctions.version` must be a single step, and
+must commit together with an outbox event for the new version. A `BEFORE
+UPDATE OF version` trigger rejects any other step immediately. A `DEFERRABLE
+INITIALLY DEFERRED` constraint trigger checks for the event at commit, because
+a writer bumps the version first and only then may append the event for it.
+Consumers can then treat a version gap as a lost event. Updates that leave the
+version unchanged need no event, and existing rows are not re-validated.
+
 Existing rows predate required title, currency, and bid-increment fields. The
 migration derives their title from the description and backfills `USD`, a
 one-minor-unit increment, version 1, and `updated_at = created_at`. Those
