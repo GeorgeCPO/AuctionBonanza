@@ -111,11 +111,40 @@ Start with versioned JSON event schemas in `packages/contracts`. A schema regist
 - Add OpenTelemetry traces and metrics as cross-service flows appear.
 - Use Oxlint with its TypeScript 7 type-aware runtime for linting and Oxfmt for formatting. Keep `tsc --noEmit` as the canonical type check because Oxlint's type-check mode is still experimental.
 - Use Vitest for test execution.
-- Use Testcontainers for integration tests against real PostgreSQL and Kafka instances.
+- Run integration tests against real PostgreSQL and Kafka instances from the root `docker-compose.yml`, both locally and in CI (see below).
 - Use k6 for load generation and Toxiproxy for controlled network failures.
+
+### Continuous integration
+
+GitHub Actions runs one job that starts PostgreSQL and Kafka with the root
+`docker-compose.yml`, applies migrations, checks `db/schema.sql` for drift, and
+runs `pnpm check` with every integration test enabled. CI and local
+development therefore share one infrastructure definition: image versions,
+Kafka listeners (including the test-only `FAULT_INJECTION` listener), topic
+provisioning, and health checks cannot drift apart. The services are
+redefined neither as GitHub service containers nor in test code.
+
+Integration tests skip when their `TEST_*` variables are unset so that
+`pnpm check` stays usable without infrastructure. In CI a skip would pass
+silently, so the service Vitest configurations fail the run when `CI=true` and
+a variable is missing. This checks the known variables, not the outcome: a
+test gated on a new variable, or an unconditional `.skip`, would not be caught
+until its variable is added to the list. Asserting zero skipped tests would
+catch both, but needs a custom reporter that sets the exit code, and forbids
+any deliberate skip in CI.
+
+Testcontainers is deferred. The current tests need one PostgreSQL and one
+Kafka broker that every test file can share, which Compose already provides
+and which developers already run. Testcontainers becomes worthwhile when tests
+need infrastructure they can create, break, and discard per test: for example
+a multi-broker cluster whose brokers are stopped to test leader election,
+`min.insync.replicas`, or partition unavailability, or several PostgreSQL
+versions side by side. Adopting it then also means reconciling it with the
+Compose definition so the two do not drift.
 
 ## Deliberately deferred
 
+- Testcontainers (see [Continuous integration](#continuous-integration))
 - Redis or another cache as part of correctness-critical state
 - gRPC
 - Kafka Schema Registry
