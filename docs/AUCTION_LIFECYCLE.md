@@ -58,6 +58,11 @@ currency or bid-increment default and must state both values.
 - The owner cannot bid on their own auction.
 - Finalization is allowed only at or after `ends_at` and is idempotent.
 - Every externally visible aggregate mutation increments `version`.
+- Every version change is a single step (`n` to `n + 1`) and commits together
+  with exactly one outbox event carrying the new version. The creation version
+  has no event. Consumers rely on this to detect a lost event as a version gap,
+  and the database enforces it (see
+  [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md#1-contiguous-auction-versions)).
 
 Time-sensitive transitions must lock the auction row and then evaluate
 `clock_timestamp()` in a later statement. PostgreSQL `now()` is fixed at

@@ -73,6 +73,48 @@ END;
 $$;
 
 
+--
+-- Name: auction_require_single_version_step(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.auction_require_single_version_step() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.version <> OLD.version + 1 THEN
+    RAISE EXCEPTION 'auction % version must advance from % to %, not to %',
+      NEW.id, OLD.version, OLD.version + 1, NEW.version
+      USING ERRCODE = 'check_violation',
+            CONSTRAINT = 'auctions_version_single_step';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: auction_require_version_outbox_event(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.auction_require_version_outbox_event() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM outbox_events
+    WHERE auction_id = NEW.id
+      AND auction_version = NEW.version
+  ) THEN
+    RAISE EXCEPTION 'auction % version % has no outbox event', NEW.id, NEW.version
+      USING ERRCODE = 'check_violation',
+            CONSTRAINT = 'auctions_version_outbox_event';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -433,6 +475,20 @@ CREATE UNIQUE INDEX users_email_case_insensitive_key ON public.users USING btree
 
 
 --
+-- Name: auctions auctions_version_outbox_event; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER auctions_version_outbox_event AFTER UPDATE OF version ON public.auctions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.version IS DISTINCT FROM old.version)) EXECUTE FUNCTION public.auction_require_version_outbox_event();
+
+
+--
+-- Name: auctions auctions_version_single_step; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER auctions_version_single_step BEFORE UPDATE OF version ON public.auctions FOR EACH ROW WHEN ((new.version IS DISTINCT FROM old.version)) EXECUTE FUNCTION public.auction_require_single_version_step();
+
+
+--
 -- Name: outbox_events outbox_events_current_auction_version; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -530,4 +586,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260908073852'),
     ('20260922090000'),
     ('20260923090000'),
-    ('20260923100000');
+    ('20260923100000'),
+    ('20260929120000');
