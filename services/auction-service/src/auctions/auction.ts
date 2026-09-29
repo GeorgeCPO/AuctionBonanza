@@ -36,6 +36,33 @@ export interface AuctionJson {
   phase: AuctionPhase;
 }
 
+// What a live view of an auction displays, at one version. The version and the
+// leading bid come from the same auctions row, so a reader can never pair one
+// version with the leading bid of another.
+export interface AuctionLiveState {
+  auctionId: string;
+  auctionVersion: string;
+  currencyCode: string;
+  startsAt: Date;
+  endsAt: Date;
+  cancelledAt: Date | null;
+  closedAt: Date | null;
+  phase: AuctionPhase;
+  leadingBid: { bidId: string; amountMinor: string } | null;
+}
+
+export interface AuctionLiveStateJson {
+  auctionId: string;
+  auctionVersion: string;
+  currencyCode: string;
+  startsAt: string;
+  endsAt: string;
+  cancelledAt: string | null;
+  closedAt: string | null;
+  phase: AuctionPhase;
+  leadingBid: { bidId: string; amountMinor: string } | null;
+}
+
 export interface AuctionPhaseFacts {
   cancelledAt: Date | null;
   closedAt: Date | null;
@@ -64,5 +91,15 @@ export function toAuctionJson(auction: Auction): AuctionJson {
     closedAt: auction.closedAt?.toISOString() ?? null,
     createdAt: auction.createdAt.toISOString(),
     updatedAt: auction.updatedAt.toISOString(),
+  };
+}
+
+export function toAuctionLiveStateJson(state: AuctionLiveState): AuctionLiveStateJson {
+  return {
+    ...state,
+    startsAt: state.startsAt.toISOString(),
+    endsAt: state.endsAt.toISOString(),
+    cancelledAt: state.cancelledAt?.toISOString() ?? null,
+    closedAt: state.closedAt?.toISOString() ?? null,
   };
 }

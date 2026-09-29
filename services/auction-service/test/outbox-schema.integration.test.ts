@@ -184,14 +184,26 @@ describe.skipIf(databaseUrl === undefined)("outbox PostgreSQL schema", () => {
       });
     }
 
-    await database.query("UPDATE auctions SET version = 3 WHERE id = $1", [auctionId]);
-    for (const auctionVersion of ["1", "2"]) {
-      await expect(insertEvent({ auctionVersion })).rejects.toMatchObject({
-        code: "23514",
-        constraint: "outbox_events_current_auction_version",
-      });
+    // A version bump must commit together with its event, so both happen in
+    // one transaction; the event for the bumped version is the only one it
+    // accepts.
+    const writer = await database.connect();
+    try {
+      await writer.query("BEGIN");
+      await writer.query("UPDATE auctions SET version = 2 WHERE id = $1", [auctionId]);
+      for (const auctionVersion of ["1", "3"]) {
+        await writer.query("SAVEPOINT attempt");
+        await expect(insertEvent({ auctionVersion }, writer)).rejects.toMatchObject({
+          code: "23514",
+          constraint: "outbox_events_current_auction_version",
+        });
+        await writer.query("ROLLBACK TO SAVEPOINT attempt");
+      }
+      await expect(insertEvent({ auctionVersion: "2" }, writer)).resolves.toBeTypeOf("string");
+      await writer.query("COMMIT");
+    } finally {
+      writer.release();
     }
-    await expect(insertEvent({ auctionVersion: "3" })).resolves.toBeTypeOf("string");
   });
 
   it("holds the auction row lock from the event insert until commit", async () => {

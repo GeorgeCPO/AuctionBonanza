@@ -16,6 +16,12 @@ The service currently exposes:
   bid alongside the auction's new `version`/`leadingBidId`/`updatedAt`: `201`
   for a fresh placement, `200` when a request replays an idempotency key that
   already succeeded.
+- `GET /v1/auctions/live-states?ids=1,2,3`, a public bulk read of what a live
+  view displays: version, leading bid, schedule, terminal facts, and derived
+  phase, for 1 to 100 auction IDs. Items follow request order, repeated IDs are
+  returned once, and unknown IDs are listed in `missingIds`. Every state comes
+  from one statement, so a version is never paired with another version's
+  leading bid. The realtime gateway uses it for snapshots and resyncs.
 - `GET /health` and `GET /ready` process and PostgreSQL health checks.
 
 Money is represented as decimal minor-unit strings at the JSON boundary.

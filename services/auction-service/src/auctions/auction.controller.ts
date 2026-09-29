@@ -6,10 +6,11 @@ import { authenticatedRoute } from "../api/authenticated-route.js";
 import { isPostgresBigintId } from "../shared/money.js";
 import {
   MAX_AUCTION_LIST_CURSOR_LENGTH,
+  MAX_LIVE_STATE_IDS,
   type CreateAuctionInput,
   type ListAuctionsInput,
 } from "./auction.service.js";
-import { toAuctionJson } from "./auction.js";
+import { toAuctionJson, toAuctionLiveStateJson } from "./auction.js";
 
 // A title longer than this is rejected at creation, so no search term beyond
 // it could ever match one.
@@ -40,6 +41,12 @@ const auctionListQuerySchema = Type.Object(
     limit: Type.Optional(Type.String({ maxLength: 3 })),
     cursor: Type.Optional(Type.String({ maxLength: MAX_AUCTION_LIST_CURSOR_LENGTH })),
   },
+  { additionalProperties: false },
+);
+
+// Long enough for the maximum number of 19-digit IDs and their separators.
+const liveStateQuerySchema = Type.Object(
+  { ids: Type.String({ minLength: 1, maxLength: MAX_LIVE_STATE_IDS * 20 }) },
   { additionalProperties: false },
 );
 
@@ -105,6 +112,26 @@ export class AuctionController {
         return {
           items: outcome.page.items.map(toAuctionJson),
           nextCursor: outcome.page.nextCursor,
+        };
+      },
+    } satisfies ApiRoute;
+  }
+
+  get findLiveStates(): ApiRoute {
+    return {
+      schema: { querystring: liveStateQuerySchema },
+      handler: async (request, reply) => {
+        const { ids } = request.query as { ids: string };
+        const outcome = await this.dependencies.auctions.findLiveStates(ids);
+        if (outcome.kind === "invalid") {
+          return reply.code(400).send({ code: "INVALID_REQUEST", message: outcome.message });
+        }
+
+        const { items, missingIds, observedAt } = outcome.liveStates;
+        return {
+          items: items.map(toAuctionLiveStateJson),
+          missingIds,
+          observedAt: observedAt.toISOString(),
         };
       },
     } satisfies ApiRoute;
