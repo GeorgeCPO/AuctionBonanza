@@ -1,9 +1,12 @@
 import { isPostgresBigintId, parseMinorUnits } from "../shared/money.js";
-import type { Auction } from "./auction.js";
+import type { Auction, AuctionLiveState } from "./auction.js";
 import type { AuctionListCursor, AuctionRepository } from "./auction.repository.js";
 
 const DEFAULT_AUCTION_LIST_LIMIT = 20;
 const MAX_AUCTION_LIST_LIMIT = 100;
+// Bounds one bulk live-state read, which realtime edges issue when they
+// resync many auctions at once.
+export const MAX_LIVE_STATE_IDS = 100;
 const CURSOR_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
 // Shared with the controller's querystring schema so a cursor too long to be
@@ -39,10 +42,21 @@ export type ListAuctionsOutcome =
   | { kind: "found"; page: AuctionPage }
   | { kind: "invalid"; message: string };
 
+export interface AuctionLiveStates {
+  items: AuctionLiveState[];
+  missingIds: string[];
+  observedAt: Date;
+}
+
+export type FindLiveStatesOutcome =
+  | { kind: "found"; liveStates: AuctionLiveStates }
+  | { kind: "invalid"; message: string };
+
 export interface AuctionServicePort {
   create(ownerId: string, input: CreateAuctionInput): Promise<CreateAuctionOutcome>;
   findById(id: string): Promise<Auction | undefined>;
   list(input: ListAuctionsInput): Promise<ListAuctionsOutcome>;
+  findLiveStates(ids: string): Promise<FindLiveStatesOutcome>;
 }
 
 function characterLength(value: string): number {
@@ -158,6 +172,36 @@ export class AuctionService implements AuctionServicePort {
           hasNextPage && lastEntry !== undefined ? this.encodeCursor(lastEntry.cursor) : null,
       },
     };
+  }
+
+  async findLiveStates(ids: string): Promise<FindLiveStatesOutcome> {
+    const parsedIds = this.parseLiveStateIds(ids);
+    if (parsedIds === undefined) {
+      return {
+        kind: "invalid",
+        message: `ids must be 1 to ${MAX_LIVE_STATE_IDS} comma-separated auction IDs`,
+      };
+    }
+
+    const snapshot = await this.repository.findLiveStates(parsedIds);
+    const statesById = new Map(snapshot.states.map((state) => [state.auctionId, state]));
+    const items: AuctionLiveState[] = [];
+    const missingIds: string[] = [];
+    for (const id of parsedIds) {
+      const state = statesById.get(id);
+      if (state === undefined) missingIds.push(id);
+      else items.push(state);
+    }
+    return { kind: "found", liveStates: { items, missingIds, observedAt: snapshot.observedAt } };
+  }
+
+  // Returns the distinct IDs in request order. A repeated ID is accepted once,
+  // since asking twice for the same state is harmless.
+  private parseLiveStateIds(value: string): string[] | undefined {
+    const ids = [...new Set(value.split(","))];
+    if (ids.length > MAX_LIVE_STATE_IDS) return undefined;
+    if (!ids.every((id) => isPostgresBigintId(id))) return undefined;
+    return ids;
   }
 
   private parseLimit(value: string | undefined): number | undefined {

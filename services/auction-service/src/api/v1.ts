@@ -13,6 +13,7 @@ export function createV1Api(dependencies: AuctionApiDependencies): ApiTree {
       auctions: {
         get: auctions.list,
         post: auctions.create,
+        "live-states": { get: auctions.findLiveStates },
         ":id": {
           get: auctions.findById,
           bids: { post: bids.create },

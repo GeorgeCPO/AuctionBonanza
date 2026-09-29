@@ -8,6 +8,7 @@ function makeRepository(create: AuctionRepository["create"]): AuctionRepository 
     create,
     findById: vi.fn<AuctionRepository["findById"]>(async () => undefined),
     list: vi.fn<AuctionRepository["list"]>(async () => []),
+    findLiveStates: vi.fn<AuctionRepository["findLiveStates"]>(),
   };
 }
 
