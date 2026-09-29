@@ -24,7 +24,8 @@ This is a project aimed to turn a competent backend engineer into someone who ca
 ## Local foundation
 
 Prerequisites are Node.js 24.20.0, pnpm 11.25.0, Docker with Compose, and
-PostgreSQL client tools containing `pg_dump` 18.x for schema snapshots.
+PostgreSQL client tools containing `pg_dump` 18.x for schema snapshots (or use
+the container's `pg_dump`, see [Continuous integration](#continuous-integration)).
 
 Direct dependencies are pinned to exact versions. Use `pnpm add --save-exact`
 when adding a dependency (the repository enforces this default), and commit the
@@ -86,6 +87,45 @@ The outbox publisher tests create and drop their own temporary databases from
 `db/schema.sql` (so the database user needs `CREATEDB`), and their own Kafka
 topics. `TEST_KAFKA_FAULT_INJECTION_UPSTREAM` enables only the broker outage
 test.
+
+## Continuous integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs one job on every pull request
+and on pushes to `master`:
+
+1. Starts `postgres` and `kafka` from the root `docker-compose.yml`, waits for
+   their health checks, and requires the one-shot `kafka-init` to exit with 0.
+2. Installs with `pnpm install --frozen-lockfile` and checks that the native
+   Kafka client (librdkafka) loads.
+3. Runs `pnpm db:migrate`, which regenerates `db/schema.sql` with `pg_dump`
+   from the postgres container, and fails if the snapshot differs from the
+   committed file. Only the `-- Dumped from/by` version header lines are
+   ignored, because they depend on the committer's `pg_dump` build.
+4. Runs `pnpm check` with all `TEST_*` variables set, so every integration
+   test runs, including the Kafka outage test.
+
+Integration tests still skip themselves locally when their variables are
+unset. When `CI=true`, the auction and identity service Vitest configurations
+instead fail before running any test if a variable they need is missing.
+
+To reproduce the CI run locally (port `19092` must be free):
+
+```sh
+docker compose up --detach --wait postgres kafka
+docker compose up kafka-init
+PATH="$PWD/scripts/compose-bin:$PATH" pnpm db:migrate
+git diff --exit-code --ignore-matching-lines='^-- Dumped (from|by) ' -- db/schema.sql
+CI=true \
+TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
+TEST_KAFKA_BROKERS=localhost:9092 \
+TEST_KAFKA_FAULT_INJECTION_UPSTREAM=localhost:19093 \
+pnpm check
+```
+
+`scripts/compose-bin/pg_dump` runs `pg_dump` inside the postgres container, so
+it also works locally without PostgreSQL client tools. CI starts from empty
+volumes; a local stack keeps its data, so a clean run needs
+`docker compose down --volumes` first, which deletes local data.
 
 Database migrations are owned centrally because the initial services share
 `auction_db`. Use `pnpm db:status`, `pnpm db:migrate`, and `pnpm db:rollback`
