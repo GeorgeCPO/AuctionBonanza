@@ -1,6 +1,6 @@
 # Realtime Gateway
 
-Status: proposed. Nothing described here is implemented yet.
+Status: proposed. Only the auction-service prerequisites are implemented.
 
 The realtime gateway streams committed auction changes to clients over
 Server-Sent Events (SSE). It is a read-side delivery system. It never decides
@@ -108,7 +108,8 @@ carries the current version. It does not guarantee the reverse, so a future
 cancellation that bumped the version without an event would silently break
 every consumer's gap detection.
 
-Proposed enforcement, in a new migration:
+Enforcement (implemented in
+`20260929120000_auction__enforce_contiguous_versions.sql`):
 
 - A `BEFORE UPDATE OF version` trigger on `auctions` that rejects any change
   other than `NEW.version = OLD.version + 1`.
@@ -124,7 +125,7 @@ Both are cheap, since the outbox row is found through the existing
 ### 2. A consistent live-state read
 
 `GET /v1/auctions/:id` returns `version` but not the leading bid, so it cannot
-serve as a snapshot of what clients display. Add:
+serve as a snapshot of what clients display. Implemented as:
 
 ```text
 GET /v1/auctions/live-states?ids=1,2,3        (1–100 ids, public, like other auction reads)
@@ -146,7 +147,7 @@ GET /v1/auctions/live-states?ids=1,2,3        (1–100 ids, public, like other a
     }
   ],
   "missingIds": ["43"],
-  "observedAt": "2026-10-01T11:02:03.123456Z"
+  "observedAt": "2026-10-01T11:02:03.123Z"
 }
 ```
 
