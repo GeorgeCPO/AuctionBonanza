@@ -3,5 +3,6 @@ node_modules/
 dist/
 coverage/
 .env
+.env.outbox-publisher
 .DS_Store
 services/identity-service/.local-keys/

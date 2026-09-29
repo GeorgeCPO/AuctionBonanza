@@ -97,8 +97,32 @@ The unique auction/event/version constraint is a defensive guard against
 duplicate domain events. The partial `(occurred_at, event_id)` index contains
 only unpublished rows, allowing future concurrent publishers to claim ordered
 batches with `FOR UPDATE SKIP LOCKED` without scanning published history.
-`published_at` is the only delivery-state field and remains nullable until a
-publisher is implemented.
+`published_at` is nullable until the event is published.
+
+The outbox publication-state migration adds the publisher's retry bookkeeping:
+`publish_attempts` (non-negative), `next_publish_attempt_at` (null means "due
+now"), and a bounded `last_publish_error`. These fields are not part of the
+immutable event record, so the immutability trigger allows updating them. A
+check constraint forbids a scheduled retry on a published event. The partial
+`(auction_id, auction_version)` index on unpublished rows answers
+the claim query's "no earlier unpublished event for this auction" check, which
+provides per-auction head-of-line ordering. The claim query and its reasoning
+are documented in
+[`../../docs/OUTBOX_PUBLISHING.md`](../../docs/OUTBOX_PUBLISHING.md).
+
+The outbox auction-sequence migration moves the ordering invariant that the
+publisher relies on from writer discipline into the schema. The event key
+becomes `(auction_id, auction_version)` instead of
+`(auction_id, event_type, auction_version)`: two event types at one version
+would have no defined publication order. A `BEFORE INSERT` trigger locks the
+auction row with `FOR NO KEY UPDATE` and rejects an event whose version is not
+the auction's current version. Any outbox writer must therefore bump the
+auction version in its own transaction and hold the auction lock until commit,
+so an auction's events become visible in version order. Bid acceptance already
+holds a stronger `FOR UPDATE` lock, so the trigger's lock is a no-op there.
+`FOR NO KEY UPDATE` does not conflict with the `FOR KEY SHARE` locks that
+foreign-key checks take, so inserting bids is not blocked. The trigger checks
+only new inserts; rows existing before the migration are not re-validated.
 
 Existing rows predate required title, currency, and bid-increment fields. The
 migration derives their title from the description and backfills `USD`, a

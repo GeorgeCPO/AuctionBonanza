@@ -237,6 +237,9 @@ export class PostgresBidRepository implements BidRepository {
         amountMinor: bidRow.amount_minor,
         currencyCode: auctionRow.currency_code,
       });
+      // The event must carry the auction version this transaction just
+      // wrote: the outbox_events_current_auction_version trigger rejects any
+      // other version, which is what keeps per-auction publication ordered.
       await client.query(
         `INSERT INTO outbox_events (
            event_id, event_type, occurred_at, auction_id, auction_version, payload
