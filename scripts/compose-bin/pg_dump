@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs pg_dump inside the Compose postgres container, so schema snapshots need
+# no local PostgreSQL client tools and always use the server's pg_dump version.
+# dbmate finds pg_dump on PATH, so put this directory first:
+#
+#   PATH="$PWD/scripts/compose-bin:$PATH" pnpm db:dump
+#
+# dbmate passes the database URL as an argument. It must also resolve inside
+# the container, which holds for the default localhost:5432 URL.
+set -eu
+compose_file="$(dirname "$0")/../../docker-compose.yml"
+exec docker compose --file "$compose_file" exec -T postgres pg_dump "$@"
