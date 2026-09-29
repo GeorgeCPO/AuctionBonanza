@@ -11,11 +11,11 @@ Status: accepted as the initial direction; expected to evolve through deliberate
 
 ## Initial deployment units
 
-| Service            | Initial responsibility                                                                                                                          |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `identity-service` | User registration, authentication, and user-owned data.                                                                                         |
-| `auction-service`  | Auction lifecycle and synchronous bid acceptance. Auctions and bids remain together initially because they share a strong correctness boundary. |
-| `realtime-gateway` | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid.                                 |
+| Service            | Initial responsibility                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `identity-service` | User registration, authentication, and user-owned data.                                                                                                                        |
+| `auction-service`  | Auction lifecycle and synchronous bid acceptance. Auctions and bids remain together initially because they share a strong correctness boundary.                                |
+| `realtime-gateway` | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid. Proposed design: [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md). |
 
 A settlement worker can be added when orders, payments, and auction closing enter scope.
 
@@ -33,7 +33,11 @@ Client
   |                                      v
   |                                    Kafka
   |                                      |
-  `-- SSE live updates <-- realtime-gateway
+  |                          realtime-gateway relay (consumer group)
+  |                                      |
+  |                           Valkey sharded pub/sub
+  |                                      |
+  `-- SSE live updates <-- realtime-gateway edge
 ```
 
 Bid acceptance is a synchronous operation in `auction-service`. For an
@@ -103,6 +107,7 @@ Start with versioned JSON event schemas in `packages/contracts`. A schema regist
 - Multiplex subscriptions over a small number of client connections rather than opening one connection per auction.
 - Include an auction version or sequence in updates. On reconnection, retrieve a current snapshot before applying newer events.
 - Adopt WebSockets only when bidirectional messaging or another demonstrated requirement makes SSE insufficient.
+- Separate Kafka consumption (relay, scaled by partitions) from connection fan-out (edge, scaled by connections), connected by Valkey sharded pub/sub. Valkey is a delivery accelerator here, not correctness-critical state: every message it can lose is repaired by a resync from `auction-service`. See [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md).
 
 ### Logging, observability, and tests
 
