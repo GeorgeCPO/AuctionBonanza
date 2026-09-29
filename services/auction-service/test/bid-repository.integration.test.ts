@@ -614,6 +614,28 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
         "UPDATE auctions SET leading_bid_id = $1, version = version + 1 WHERE id = $2",
         [inserted.rows[0]!.id, auctionId],
       );
+      // Every version bump needs its outbox event by commit.
+      await holder.query(
+        `INSERT INTO outbox_events (
+           event_id, event_type, occurred_at, auction_id, auction_version, payload
+         )
+         SELECT event.id, 'BidAccepted.v1', event.at, auctions.id, auctions.version,
+                jsonb_build_object(
+                  'eventId', event.id::text,
+                  'eventType', 'BidAccepted.v1',
+                  'occurredAt',
+                    to_char(event.at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+                  'auctionId', auctions.id::text,
+                  'auctionVersion', auctions.version::text,
+                  'bidId', $2::text,
+                  'amountMinor', '1500',
+                  'currencyCode', auctions.currency_code
+                )
+         FROM auctions
+         CROSS JOIN (SELECT gen_random_uuid() AS id, clock_timestamp() AS at) AS event
+         WHERE auctions.id = $1`,
+        [auctionId, inserted.rows[0]!.id],
+      );
       await holder.query("COMMIT");
 
       await expect(blocked).resolves.toEqual({
