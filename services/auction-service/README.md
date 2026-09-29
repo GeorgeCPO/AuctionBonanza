@@ -77,3 +77,45 @@ cp services/auction-service/.env.example services/auction-service/.env
 pnpm --filter @auction-bonanza/auction-service build
 pnpm --filter @auction-bonanza/auction-service start:local
 ```
+
+## Outbox publisher worker
+
+`src/outbox-publisher.main.ts` is a second, independently deployable entry
+point in this service. It shares the service's code and its ownership of
+`outbox_events`, but it runs as its own process with its own validated
+configuration, and it scales separately from the HTTP API. It claims committed
+outbox events, publishes each stored payload to Kafka keyed by `auctionId`, and
+marks an event published only after Kafka acknowledges it. The design, delivery
+and ordering guarantees, and failure behavior are in
+[`../../docs/OUTBOX_PUBLISHING.md`](../../docs/OUTBOX_PUBLISHING.md).
+
+```sh
+cp services/auction-service/.env.outbox-publisher.example services/auction-service/.env.outbox-publisher
+pnpm --filter @auction-bonanza/auction-service build
+pnpm --filter @auction-bonanza/auction-service start:outbox-publisher:local
+```
+
+The worker validates all configuration before connecting and exits with code 1
+if any setting is invalid. It also rejects combinations that could make
+PostgreSQL end a claim while Kafka might still acknowledge it.
+
+| Variable                                   | Default                    | Meaning                                                             |
+| ------------------------------------------ | -------------------------- | ------------------------------------------------------------------- |
+| `DATABASE_URL`                             | required                   | PostgreSQL connection string                                        |
+| `KAFKA_BROKERS`                            | `localhost:9092`           | Comma-separated bootstrap brokers                                   |
+| `KAFKA_CLIENT_ID`                          | `auction-outbox-publisher` | Kafka client ID, also used as the PostgreSQL `application_name`     |
+| `AUCTION_EVENTS_TOPIC`                     | `auction.events`           | Destination topic                                                   |
+| `OUTBOX_PUBLISHER_CONCURRENCY`             | `1`                        | Publication loops, and PostgreSQL connections (1–16)                |
+| `OUTBOX_BATCH_SIZE`                        | `50`                       | Maximum events per cycle, at most one per auction (1–500)           |
+| `OUTBOX_POLL_INTERVAL_MS`                  | `250`                      | Pause after a cycle that was not a full, clean batch                |
+| `OUTBOX_PUBLISH_TIMEOUT_MS`                | `10000`                    | Kafka delivery deadline per event                                   |
+| `OUTBOX_RETRY_BASE_DELAY_MS`               | `500`                      | First retry backoff ceiling                                         |
+| `OUTBOX_RETRY_MAX_DELAY_MS`                | `60000`                    | Maximum retry backoff ceiling                                       |
+| `OUTBOX_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | `30000`                    | Releases a stalled publisher's locks; ≥ publish timeout + 5000      |
+| `OUTBOX_SHUTDOWN_TIMEOUT_MS`               | `30000`                    | Graceful shutdown deadline; ≥ publish timeout + 7000                |
+| `LOG_LEVEL`                                | `info`                     | Pino level; `debug` logs each published event with partition/offset |
+
+On `SIGTERM` or `SIGINT`, the worker stops starting new cycles, lets in-flight
+cycles finish and commit, flushes and disconnects the Kafka producer, and
+closes its pool. A second signal, or reaching the shutdown deadline, exits
+immediately. Uncommitted claims then roll back and are republished later.

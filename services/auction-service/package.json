@@ -7,6 +7,8 @@
     "build": "pnpm --filter @auction-bonanza/http-routing build && pnpm --filter @auction-bonanza/access-auth build && pnpm --filter @auction-bonanza/contracts build && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "start:local": "node --env-file-if-exists=.env dist/index.js",
+    "start:outbox-publisher": "node dist/outbox-publisher.main.js",
+    "start:outbox-publisher:local": "node --env-file-if-exists=.env.outbox-publisher dist/outbox-publisher.main.js",
     "test": "pnpm --filter @auction-bonanza/http-routing build && pnpm --filter @auction-bonanza/access-auth build && pnpm --filter @auction-bonanza/contracts build && vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -14,9 +16,11 @@
     "@auction-bonanza/access-auth": "workspace:*",
     "@auction-bonanza/contracts": "workspace:*",
     "@auction-bonanza/http-routing": "workspace:*",
+    "@confluentinc/kafka-javascript": "1.10.1",
     "@sinclair/typebox": "0.34.52",
     "fastify": "5.6.2",
-    "pg": "8.16.3"
+    "pg": "8.16.3",
+    "pino": "10.3.1"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

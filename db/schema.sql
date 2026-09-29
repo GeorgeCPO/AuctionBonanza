@@ -46,6 +46,33 @@ END;
 $$;
 
 
+--
+-- Name: auction_require_current_outbox_version(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.auction_require_current_outbox_version() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  current_version bigint;
+BEGIN
+  SELECT version INTO current_version
+  FROM auctions
+  WHERE id = NEW.auction_id
+  FOR NO KEY UPDATE;
+
+  -- A missing auction is reported by the foreign key instead.
+  IF FOUND AND current_version <> NEW.auction_version THEN
+    RAISE EXCEPTION 'outbox event auction_version % does not match auction % version %',
+      NEW.auction_version, NEW.auction_id, current_version
+      USING ERRCODE = 'check_violation',
+            CONSTRAINT = 'outbox_events_current_auction_version';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -177,11 +204,16 @@ CREATE TABLE public.outbox_events (
     auction_version bigint NOT NULL,
     payload jsonb NOT NULL,
     published_at timestamp with time zone,
+    publish_attempts integer DEFAULT 0 NOT NULL,
+    next_publish_attempt_at timestamp with time zone,
+    last_publish_error character varying(1000),
     CONSTRAINT outbox_events_auction_version_check CHECK ((auction_version >= 1)),
     CONSTRAINT outbox_events_event_type_check CHECK ((((event_type)::text = btrim((event_type)::text)) AND ((char_length((event_type)::text) >= 1) AND (char_length((event_type)::text) <= 100)))),
     CONSTRAINT outbox_events_payload_metadata_check CHECK (((payload ?& ARRAY['eventId'::text, 'eventType'::text, 'occurredAt'::text, 'auctionId'::text, 'auctionVersion'::text]) AND ((payload ->> 'eventId'::text) = (event_id)::text) AND ((payload ->> 'eventType'::text) = (event_type)::text) AND (((payload ->> 'occurredAt'::text))::timestamp with time zone = occurred_at) AND ((payload ->> 'auctionId'::text) = (auction_id)::text) AND ((payload ->> 'auctionVersion'::text) = (auction_version)::text))),
     CONSTRAINT outbox_events_payload_object_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
-    CONSTRAINT outbox_events_published_at_check CHECK (((published_at IS NULL) OR (published_at >= occurred_at)))
+    CONSTRAINT outbox_events_publish_attempts_check CHECK ((publish_attempts >= 0)),
+    CONSTRAINT outbox_events_published_at_check CHECK (((published_at IS NULL) OR (published_at >= occurred_at))),
+    CONSTRAINT outbox_events_published_retry_check CHECK (((published_at IS NULL) OR (next_publish_attempt_at IS NULL)))
 );
 
 
@@ -278,11 +310,11 @@ ALTER TABLE ONLY public.identity_sessions
 
 
 --
--- Name: outbox_events outbox_events_auction_event_version_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: outbox_events outbox_events_auction_version_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.outbox_events
-    ADD CONSTRAINT outbox_events_auction_event_version_key UNIQUE (auction_id, event_type, auction_version);
+    ADD CONSTRAINT outbox_events_auction_version_key UNIQUE (auction_id, auction_version);
 
 
 --
@@ -380,6 +412,13 @@ CREATE INDEX identity_sessions_user_id_idx ON public.identity_sessions USING btr
 
 
 --
+-- Name: outbox_events_unpublished_auction_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX outbox_events_unpublished_auction_idx ON public.outbox_events USING btree (auction_id, auction_version) WHERE (published_at IS NULL);
+
+
+--
 -- Name: outbox_events_unpublished_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -391,6 +430,13 @@ CREATE INDEX outbox_events_unpublished_idx ON public.outbox_events USING btree (
 --
 
 CREATE UNIQUE INDEX users_email_case_insensitive_key ON public.users USING btree (lower((email)::text));
+
+
+--
+-- Name: outbox_events outbox_events_current_auction_version; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER outbox_events_current_auction_version BEFORE INSERT ON public.outbox_events FOR EACH ROW EXECUTE FUNCTION public.auction_require_current_outbox_version();
 
 
 --
@@ -482,4 +528,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260907120000'),
     ('20260907150000'),
     ('20260908073852'),
-    ('20260922090000');
+    ('20260922090000'),
+    ('20260923090000'),
+    ('20260923100000');

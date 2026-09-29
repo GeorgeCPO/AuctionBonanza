@@ -9,7 +9,13 @@ import { createDatabasePool } from "./database.js";
 
 if (import.meta.main) {
   const config = loadAuctionConfig();
-  const database = createDatabasePool(config);
+  const database = createDatabasePool({
+    connectionString: config.databaseUrl,
+    maxConnections: 10,
+    onIdleClientError: (error) => {
+      console.error("Unexpected error from an idle PostgreSQL client", error);
+    },
+  });
   const accessTokenVerifier = createAuctionAccessTokenVerifier({
     issuer: config.authIssuer,
     audience: config.authAudience,
