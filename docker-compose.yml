@@ -1,3 +1,39 @@
+# Shared by the three Valkey cluster nodes, which differ only in port.
+#
+# Each node listens on the same port inside its container and on the host, and
+# announces the hostname "localhost" to clients. Host processes (services
+# started with pnpm, integration tests) can then follow the endpoints in
+# CLUSTER SHARDS replies and MOVED redirects. The cluster bus between nodes
+# still uses container IPs. Containers cannot use the announced endpoints;
+# that needs a separate announcement once services run in Compose.
+x-valkey-node: &valkey-node
+  image: valkey/valkey:9.0.6
+  command:
+    - /bin/sh
+    - -c
+    # Development only: no password, and protected mode off so the host can
+    # connect through the published port.
+    - >-
+      exec valkey-server
+      --port "$${VALKEY_PORT}"
+      --cluster-enabled yes
+      --cluster-announce-hostname localhost
+      --cluster-preferred-endpoint-type hostname
+      --cluster-node-timeout 5000
+      --save ""
+      --appendonly no
+      --protected-mode no
+  healthcheck:
+    test: ["CMD-SHELL", 'valkey-cli -p "$${VALKEY_PORT}" ping | grep -q PONG']
+    interval: 2s
+    timeout: 3s
+    retries: 15
+  # Cluster membership lives in nodes.conf. Keeping it in memory means a
+  # recreated or restarted node starts blank, and valkey-init rebuilds the
+  # whole cluster instead of reconciling stale addresses.
+  tmpfs:
+    - /data
+
 services:
   postgres:
     image: postgres:18.6-bookworm
@@ -81,6 +117,76 @@ services:
         --topic auction.events --partitions 12 --replication-factor 1
         --config min.insync.replicas=1 --config cleanup.policy=delete --config retention.ms=604800000 &&
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --describe --topic auction.events
+    restart: "no"
+
+  # Valkey runs in cluster mode from the start: the realtime gateway reads
+  # CLUSTER SHARDS to route sharded subscriptions, and slot migration needs a
+  # second primary to move to. Three primaries, no replicas, no persistence:
+  # the bus carries only pub/sub traffic, so there is nothing to keep.
+  valkey-1:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7001
+    ports:
+      - "7001:7001"
+
+  valkey-2:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7002
+    ports:
+      - "7002:7002"
+
+  valkey-3:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7003
+    ports:
+      - "7003:7003"
+
+  # One-shot cluster formation. If the three nodes already form one healthy
+  # cluster covering every slot, it changes nothing. Otherwise (first start,
+  # or a node restarted blank) it resets all three and creates the cluster
+  # again. That discards subscriptions, which clients must survive anyway.
+  valkey-init:
+    image: valkey/valkey:9.0.6
+    depends_on:
+      valkey-1:
+        condition: service_healthy
+      valkey-2:
+        condition: service_healthy
+      valkey-3:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        nodes="valkey-1:7001 valkey-2:7002 valkey-3:7003"
+        healthy=true
+        for node in $$nodes; do
+          info="$$(valkey-cli -h "$${node%:*}" -p "$${node#*:}" cluster info)"
+          echo "$$info" | grep -q '^cluster_state:ok' || healthy=false
+          echo "$$info" | grep -q '^cluster_known_nodes:3' || healthy=false
+          echo "$$info" | grep -q '^cluster_slots_assigned:16384' || healthy=false
+        done
+        if [ "$$healthy" = true ]; then
+          echo "Valkey cluster already formed"
+        else
+          addresses=""
+          for node in $$nodes; do
+            host="$${node%:*}"
+            port="$${node#*:}"
+            valkey-cli -h "$$host" -p "$$port" flushall > /dev/null
+            valkey-cli -h "$$host" -p "$$port" cluster reset hard > /dev/null
+            # valkey-cli --cluster create expects addresses, not hostnames.
+            addresses="$$addresses $$(getent hosts "$$host" | cut -d ' ' -f 1):$$port"
+          done
+          valkey-cli --cluster create $$addresses --cluster-replicas 0 --cluster-yes
+        fi
+        until valkey-cli -h valkey-1 -p 7001 cluster info | grep -q '^cluster_state:ok'; do
+          sleep 1
+        done
+        valkey-cli -h valkey-1 -p 7001 cluster shards
     restart: "no"
 
 volumes:

@@ -1,6 +1,7 @@
 # Realtime Gateway
 
-Status: proposed. Only the auction-service prerequisites are implemented.
+Status: proposed. Implemented so far: the auction-service prerequisites and
+the local and CI Valkey cluster (slices 1 and 2).
 
 The realtime gateway streams committed auction changes to clients over
 Server-Sent Events (SSE). It is a read-side delivery system. It never decides
