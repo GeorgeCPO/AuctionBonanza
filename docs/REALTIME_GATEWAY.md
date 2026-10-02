@@ -1,7 +1,7 @@
 # Realtime Gateway
 
-Status: proposed. Implemented so far: the auction-service prerequisites and
-the local and CI Valkey cluster (slices 1 and 2).
+Status: proposed. Implemented so far: the auction-service prerequisites, the
+local and CI Valkey cluster, and the relay (slices 1 to 3).
 
 The realtime gateway streams committed auction changes to clients over
 Server-Sent Events (SSE). It is a read-side delivery system. It never decides
@@ -163,18 +163,101 @@ connection drops must refresh every auction it serves at once.
 
 ## Relay
 
+Status: implemented in `services/realtime-gateway/src/relay/` and run by
+`relay.main.ts`.
+
 A Kafka consumer in group `realtime-relay`, using the promisified
 `@confluentinc/kafka-javascript` API like the outbox publisher.
 
+The sequence below shows one relay process: how it is assigned partitions,
+how each message is forwarded or skipped, what happens when a publish fails,
+and how it shuts down. The numbered steps are explained in the rest of this
+section.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as Kafka consumer group<br/>(auction.events)
+    participant R as EventRelay
+    participant S as ResyncBroadcaster
+    participant D as decideRelay
+    participant P as ValkeyBusPublisher
+    participant V as Valkey cluster
+
+    Note over K,V: Assignment (rebalance callback, awaited before the assignment applies)
+    K->>R: rebalance_cb(assign, partitions)
+    R->>K: committed(partitions)
+    K-->>R: committed offsets
+    opt a partition has no committed offset
+        R->>S: request(reason)
+        S-)P: publish(gateway:control, resync) in the background, retried with backoff
+        P->>V: SPUBLISH gateway:control
+    end
+
+    Note over K,V: Per message, one at a time within a partition
+    loop each message
+        K->>R: eachMessage(partition, offset, record)
+        opt first message after assignment and offset differs from the committed offset
+            R->>S: request(reason)
+        end
+        R->>S: publishPending()
+        opt a resync is pending
+            S->>P: publish(gateway:control, resync)
+            P->>V: SPUBLISH gateway:control
+        end
+        R->>D: decideRelay(key, value, event-type)
+        alt valid event
+            D-->>R: publish(auction:{auctionId}, envelope)
+            R->>P: publish(channel, envelope)
+            P->>V: SPUBLISH auction:{auctionId}
+            alt accepted
+                V-->>P: accepted
+                P-->>R: resolved
+                R-->>K: handler resolves
+                Note over K: offset stored, committed by the next auto-commit
+            else fails or exceeds the publish timeout
+                P-->>R: rejected
+                R->>K: pause(partition)
+                R-->>K: handler throws
+                Note over K: client seeks back to this offset, nothing is stored
+                R->>R: resume timer after capped backoff with jitter
+                R->>K: resume(partition)
+                Note over K: the same message is delivered again
+            end
+        else unknown event type or malformed record
+            D-->>R: skip(reason, detail)
+            R->>R: log skip with partition and offset
+            R-->>K: handler resolves
+            Note over K: offset stored, the edge repairs the version gap
+        end
+    end
+
+    Note over K,V: Shutdown
+    R->>K: disconnect() waits for in-flight messages
+    Note over K: stored offsets are committed on the way out
+```
+
 Per message, in partition order:
 
-1. Read the `event-type` header. An unknown type is logged at `warn`, counted,
-   and skipped. New event types are added to the relay before producers emit
-   them.
-2. Parse the value with the contract parser, for example `parseBidAcceptedV1`.
-3. Wrap it in the bus envelope and `SPUBLISH` it to `auction:{auctionId}`.
-4. Commit the offset only after the publish succeeded. `enable.auto.commit` is
-   off; commits are explicit and cover only offsets whose publish completed.
+1. Check continuity (see [offset resets](#offset-resets-and-resync)), and
+   publish a pending resync first if there is one.
+2. Read the `event-type` header. A type without a relay contract is logged at
+   `warn` and skipped. New event types are added to the relay before producers
+   emit them.
+3. Parse the value with the contract parser, for example `parseBidAcceptedV1`,
+   and check that the record key equals the event's `auctionId`.
+4. Wrap it in the bus envelope and `SPUBLISH` it to `auction:{auctionId}`.
+5. Return from the handler, which marks the offset as processed.
+
+**Acknowledgement boundary.** The Kafka client stores a message's offset only
+after its handler resolves, and librdkafka's auto-commit (every
+`RELAY_COMMIT_INTERVAL_MS`, and when partitions are revoked or the consumer
+closes) commits only stored offsets. The handler resolves after the bus has
+accepted the publish or the record was skipped, so an offset is never
+committed ahead of its publish. This is the same guarantee as committing by
+hand after each publish, without a commit request per message. A crash between
+publish and commit publishes again when the partition resumes, which the edges
+drop as `v ≤ c`. The process test demonstrates exactly this sequence.
 
 **A malformed event is skipped, not retried.** This is the opposite of the
 outbox publisher, which blocks an auction on an event that cannot be
@@ -182,30 +265,61 @@ published. The difference is deliberate: the outbox is the only path to Kafka,
 so dropping an event there loses it. The relay is a display path with an
 authoritative fallback. Skipping creates a version gap, which the edge repairs
 from `auction-service` when the next event of that auction arrives. Blocking
-would freeze every auction on the partition. The skip is logged at `error`
-with `eventId`, `auctionId`, `auctionVersion`, partition, and offset.
+would freeze every auction on the partition. Malformed means a missing
+`event-type` header or value, invalid JSON, a payload that breaks its
+contract (which includes a header that disagrees with the payload's type), or
+a key that differs from the event's `auctionId`, because the key decides the
+partition and so the order edges rely on. The skip is logged at `error` with
+the partition, offset, key, `eventId`, and reason.
 
-Configuration choices:
+**A failed publish pauses its partition.** The relay pauses the partition,
+throws, and the client seeks back to the failed message. A timer resumes the
+partition after the same capped exponential backoff with jitter as the outbox
+publisher, and the message is delivered again. Pausing, instead of waiting
+inside the handler, keeps the consumer polling, so a long Valkey outage never
+exceeds `max.poll.interval.ms` and evicts the relay from the group. Other
+partitions keep flowing if they can publish. Publishes are bounded by
+`RELAY_PUBLISH_TIMEOUT_MS`: node-redis queues commands while a node
+reconnects, and without the bound a publish could wait indefinitely.
 
-| Setting                         | Value                | Reason                                                                                                                                                                                                                                   |
-| ------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `partition.assignment.strategy` | `cooperative-sticky` | A rebalance moves only the partitions that must move; other relays keep forwarding.                                                                                                                                                      |
-| `auto.offset.reset`             | `latest`             | A partition without a committed offset starts at the end, because edges start from live-state snapshots rather than from history. The relay then broadcasts a resync (see below) so no edge keeps state that predates the skipped range. |
-| `enable.auto.commit`            | `false`              | Commit only after the publish, never on a timer.                                                                                                                                                                                         |
+| Setting                          | Value                            | Reason                                                                                                                                                                                                                                                             |
+| -------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `partition.assignment.strategy`  | `cooperative-sticky`             | A rebalance moves only the partitions that must move; other relays keep forwarding.                                                                                                                                                                                |
+| `auto.offset.reset`              | `latest`                         | A partition without a usable committed offset starts at the end, because edges start from live-state snapshots rather than from history. The relay then broadcasts a resync so no edge keeps state that predates the skipped range.                                |
+| `enable.auto.commit`             | `true`, of stored offsets only   | The client stores an offset only after its handler resolved; see the acknowledgement boundary above. `enable.auto.offset.store` is always `false` in this client's promisified API.                                                                                |
+| `session.timeout.ms`             | `RELAY_SESSION_TIMEOUT_MS`, 10 s | How long a crashed relay keeps its partitions before the group reassigns them, and so how long their live updates stall. Lower than librdkafka's 45 s default because a relay is cheap to replace; the broker's `group.min.session.timeout.ms` (6 s) is the floor. |
+| `partitionsConsumedConcurrently` | `RELAY_PARTITION_CONCURRENCY`, 4 | Partitions handled in parallel by one process. Each partition is still handled one message at a time.                                                                                                                                                              |
 
-**Valkey unavailable.** The relay stops committing, pauses its assigned
-partitions, and retries the failed publish with the same capped exponential
-backoff with jitter as the outbox publisher. Pausing, instead of blocking in
-the message handler, keeps the consumer polling so it is not evicted from the
-group for exceeding `max.poll.interval.ms`. When Valkey returns, it resumes and
-forwards the backlog. Nothing is lost: Kafka holds it.
+### Offset resets and resync
 
-**Starting from a reset offset.** When the relay is assigned a partition that
-has no committed offset (a new group, expired offsets, or an operator reset),
-it publishes `{ "type": "resync" }` on the control channel `gateway:control`
-before forwarding anything. Every edge then refreshes all of its auctions. This
-is rare, and it turns an offset reset into a safe operation instead of a silent
-loss of live updates.
+An offset reset skips events, and an edge cannot notice skipped events for an
+auction that never changes again. So whenever the relay may have skipped
+events, it publishes `{ "v": 1, "type": "resync", "reason": … }` on the
+control channel `gateway:control` before it forwards anything else, and every
+edge refreshes all of its auctions. There are two detection points:
+
+- **On assignment.** The rebalance callback, which the client awaits before
+  applying an assignment, reads the group's committed offsets. A partition
+  without one (a new group, offsets expired after the group was empty longer
+  than the broker's `offsets.retention.minutes`, or an operator reset) starts
+  at the latest offset, so the relay requests a resync at once. It is
+  published in the background as well, because a partition that receives no
+  new messages must not delay it.
+- **On the first message after assignment.** Its offset must equal the
+  committed offset. Anything else means the client reset its position, most
+  likely because retention deleted records the group had not read yet, so the
+  relay requests a resync before forwarding that message.
+
+A reset that skips records and is followed by no new record on that partition
+is detected only by the first check. That leaves one gap: a committed offset
+that retention overtook on a partition that then stays silent. It requires the
+relay group to fall more than the topic's retention (7 days locally) behind,
+which is an outage an operator would already be handling.
+
+The client reports "no committed offset" as a negative offset, and also turns
+a committed offset of 0 into `null`. The relay never commits 0 (it commits the
+offset after a processed message), so both are treated as "none"; an operator
+who sets a group to offset 0 gets one unnecessary resync.
 
 **Ordering.** Valkey delivers the messages of one channel in the order one
 connection published them. The relay publishes a partition's messages in order,
@@ -477,7 +591,7 @@ reconnects.
 | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | Kafka delivers an event 5 times                      | The relay forwards each copy. The edge applies the first and drops the rest (`v ≤ c`).                                                                                              | One change.                                                |
 | Outbox late duplicate `v, v+1, v`                    | The edge drops the second `v`.                                                                                                                                                      | `v`, `v+1`.                                                |
-| Relay crashes after `SPUBLISH`, before commit        | Another relay re-reads from the committed offset and publishes again.                                                                                                               | Nothing extra; edges drop the duplicates.                  |
+| Relay crashes after `SPUBLISH`, before commit        | Its partitions stall until the group's session timeout (`RELAY_SESSION_TIMEOUT_MS`) expires; then another relay re-reads from the committed offset and publishes again.             | Nothing extra; edges drop the duplicates.                  |
 | Relay publishes `v+1` before `v` (rebalance overlap) | The edge sees a gap, resyncs, then drops `v` when it arrives.                                                                                                                       | A `snapshot` at `v+1` or later.                            |
 | Malformed event on the topic                         | The relay logs and skips it. The next event of that auction reveals the gap.                                                                                                        | A `snapshot` once the auction changes again.               |
 | All relays down, or lagging                          | Nothing is published. Edges keep serving their last state. When relays recover they forward the backlog in order, and edges drop what is already reflected.                         | Correct but stale state, then the missed changes in order. |

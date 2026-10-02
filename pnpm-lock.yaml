@@ -141,6 +141,18 @@ importers:
 
   services/realtime-gateway:
     dependencies:
+      '@auction-bonanza/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@confluentinc/kafka-javascript':
+        specifier: 1.10.1
+        version: 1.10.1
+      '@sinclair/typebox':
+        specifier: 0.34.52
+        version: 0.34.52
+      pino:
+        specifier: 10.3.1
+        version: 10.3.1
       redis:
         specifier: 6.2.1
         version: 6.2.1
