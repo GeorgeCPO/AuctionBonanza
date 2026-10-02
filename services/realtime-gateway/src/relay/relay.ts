@@ -4,7 +4,6 @@ import type { Logger } from "pino";
 import type { BusPublisher } from "../bus/bus.js";
 import { backoffDelayMs, type RetryBackoffPolicy } from "../shared/backoff.js";
 import { decideRelay, type SkipDecision } from "./relay.decision.js";
-import { ResyncBroadcaster } from "./relay.resync.js";
 
 export interface EventRelayOptions {
   brokers: readonly string[];
@@ -17,19 +16,6 @@ export interface EventRelayOptions {
   sessionTimeoutMs: number;
   retryBackoff: RetryBackoffPolicy;
   logger: Logger;
-}
-
-interface TopicPartition {
-  topic: string;
-  partition: number;
-}
-
-interface PartitionState {
-  // The group's committed offset when this relay was assigned the partition,
-  // or null when there was none.
-  committedOffset: bigint | null;
-  firstMessageChecked: boolean;
-  consecutiveFailures: number;
 }
 
 interface SkippedRecord {
@@ -54,27 +40,21 @@ export class EventRelay {
   private readonly options: EventRelayOptions;
   private readonly logger: Logger;
   private readonly consumer: KafkaJS.Consumer;
-  private readonly resync: ResyncBroadcaster;
-  private readonly partitions = new Map<number, PartitionState>();
+  // Consecutive publish failures per partition, for the retry backoff.
+  private readonly failures = new Map<number, number>();
   private readonly resumeTimers = new Set<NodeJS.Timeout>();
-  private readonly stopping = new AbortController();
+  private stopping = false;
 
   constructor(options: EventRelayOptions) {
     this.options = options;
     this.logger = options.logger;
-    this.resync = new ResyncBroadcaster({
-      publisher: options.publisher,
-      retryBackoff: options.retryBackoff,
-      logger: options.logger,
-      signal: this.stopping.signal,
-    });
     this.consumer = new KafkaJS.Kafka({}).consumer({
       kafkaJS: {
         groupId: options.groupId,
-        // A partition without a committed offset starts at the end: edges
-        // start from live-state snapshots, not from history. The relay then
-        // broadcasts a resync, because events before that point were skipped.
-        fromBeginning: false,
+        // A partition without a committed offset (a new group, or offsets
+        // the broker expired) starts at the oldest retained event, so no
+        // event is skipped. Edges drop the ones older than their state.
+        fromBeginning: true,
         autoCommit: true,
         autoCommitInterval: options.commitIntervalMs,
         sessionTimeout: options.sessionTimeoutMs,
@@ -85,11 +65,6 @@ export class EventRelay {
       },
       "bootstrap.servers": options.brokers.join(","),
       "client.id": options.clientId,
-      // Awaited by the client before it applies an assignment, so partition
-      // state (and any resync request) exists before the first message.
-      rebalance_cb: async (error: { code: number }, assignment: TopicPartition[]) => {
-        await this.onRebalance(error, assignment);
-      },
     });
   }
 
@@ -105,7 +80,7 @@ export class EventRelay {
   // Waits for in-flight messages, then leaves the group. Offsets stored by
   // then are committed on the way out.
   async stop(): Promise<void> {
-    this.stopping.abort();
+    this.stopping = true;
     for (const timer of this.resumeTimers) clearTimeout(timer);
     this.resumeTimers.clear();
     await this.consumer.disconnect();
@@ -116,13 +91,7 @@ export class EventRelay {
     partition,
     message,
   }: KafkaJS.EachMessagePayload): Promise<void> {
-    const state = this.partitionState(partition);
-    const offset = BigInt(message.offset);
     try {
-      this.checkContinuity(partition, state, offset);
-      // Edges must refresh before they see anything that follows a gap.
-      await this.resync.publishPending();
-
       const key = message.key?.toString("utf8") ?? null;
       const decision = decideRelay({
         key,
@@ -139,86 +108,12 @@ export class EventRelay {
           eventId: headerValue(message.headers, "event-id"),
         });
       }
-      state.consecutiveFailures = 0;
+      this.failures.delete(partition);
     } catch (error) {
-      this.pauseAfterFailure(topic, partition, state, message.offset, error);
+      this.pauseAfterFailure(topic, partition, message.offset, error);
       // The client seeks back to this message, so it is delivered again
       // once the partition resumes.
       throw error;
-    }
-  }
-
-  private async onRebalance(error: { code: number }, assignment: TopicPartition[]): Promise<void> {
-    if (error.code === KafkaJS.ErrorCodes.ERR__ASSIGN_PARTITIONS) {
-      await this.onAssigned(assignment);
-    } else {
-      this.onRevoked(assignment);
-    }
-  }
-
-  private async onAssigned(assignment: TopicPartition[]): Promise<void> {
-    const committed = await this.readCommittedOffsets(assignment);
-    const withoutCommit: number[] = [];
-    for (const { partition } of assignment) {
-      const committedOffset = committed.get(partition) ?? null;
-      if (committedOffset === null) withoutCommit.push(partition);
-      this.partitions.set(partition, {
-        committedOffset,
-        firstMessageChecked: false,
-        consecutiveFailures: 0,
-      });
-    }
-    this.logger.info(
-      {
-        partitions: assignment.map(({ partition }) => ({
-          partition,
-          committedOffset: committed.get(partition)?.toString() ?? null,
-        })),
-      },
-      "partitions assigned",
-    );
-    if (withoutCommit.length > 0) {
-      this.resync.request(
-        `partitions ${withoutCommit.join(",")} started without a committed offset`,
-      );
-    }
-  }
-
-  private onRevoked(assignment: TopicPartition[]): void {
-    for (const { partition } of assignment) this.partitions.delete(partition);
-    this.logger.info(
-      { partitions: assignment.map(({ partition }) => partition) },
-      "partitions revoked",
-    );
-  }
-
-  // A partition missing from the result has no committed offset.
-  private async readCommittedOffsets(
-    assignment: TopicPartition[],
-  ): Promise<Map<number, bigint | null>> {
-    const committed = new Map<number, bigint | null>();
-    try {
-      const offsets = await this.consumer.committed(assignment);
-      for (const { partition, offset } of offsets) {
-        committed.set(partition, parseCommittedOffset(offset));
-      }
-    } catch (error) {
-      // Without the committed offsets, a skipped range cannot be ruled out.
-      this.logger.warn({ err: error }, "could not read committed offsets; treating them as absent");
-    }
-    return committed;
-  }
-
-  // The first message after an assignment must be the committed offset. Any
-  // other offset means the client reset its position (for example because
-  // retention deleted the committed offset) and events may have been skipped.
-  private checkContinuity(partition: number, state: PartitionState, offset: bigint): void {
-    if (state.firstMessageChecked) return;
-    state.firstMessageChecked = true;
-    if (state.committedOffset !== null && offset !== state.committedOffset) {
-      this.resync.request(
-        `partition ${partition} resumed at offset ${offset}, not at committed offset ${state.committedOffset}`,
-      );
     }
   }
 
@@ -241,14 +136,14 @@ export class EventRelay {
   private pauseAfterFailure(
     topic: string,
     partition: number,
-    state: PartitionState,
     offset: string,
     error: unknown,
   ): void {
-    state.consecutiveFailures += 1;
-    const retryDelayMs = backoffDelayMs(this.options.retryBackoff, state.consecutiveFailures);
+    const attempt = (this.failures.get(partition) ?? 0) + 1;
+    this.failures.set(partition, attempt);
+    const retryDelayMs = backoffDelayMs(this.options.retryBackoff, attempt);
     this.logger.error(
-      { err: error, partition, offset, attempt: state.consecutiveFailures, retryDelayMs },
+      { err: error, partition, offset, attempt, retryDelayMs },
       "relay publish failed; partition paused, offset not committed",
     );
 
@@ -256,7 +151,7 @@ export class EventRelay {
     this.consumer.pause(partitions);
     const timer = setTimeout(() => {
       this.resumeTimers.delete(timer);
-      if (this.stopping.signal.aborted) return;
+      if (this.stopping) return;
       try {
         this.consumer.resume(partitions);
       } catch (resumeError) {
@@ -267,26 +162,6 @@ export class EventRelay {
     }, retryDelayMs);
     this.resumeTimers.add(timer);
   }
-
-  private partitionState(partition: number): PartitionState {
-    let state = this.partitions.get(partition);
-    if (state === undefined) {
-      // Only reachable if a message arrives without an assignment callback;
-      // without a known committed offset, continuity cannot be checked.
-      state = { committedOffset: null, firstMessageChecked: true, consecutiveFailures: 0 };
-      this.partitions.set(partition, state);
-    }
-    return state;
-  }
-}
-
-// The client reports "no committed offset" as a negative offset, and also
-// turns a committed offset of 0 into null. The relay never commits 0 (it
-// commits the offset after a processed message), so both mean "none".
-function parseCommittedOffset(offset: string | null): bigint | null {
-  if (offset === null) return null;
-  const value = BigInt(offset);
-  return value < 0n ? null : value;
 }
 
 function headerValue(headers: KafkaJS.IHeaders | undefined, name: string): string | undefined {

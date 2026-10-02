@@ -14,9 +14,9 @@ Implemented so far:
 - `src/relay.main.ts`, the relay process (`start:relay`, or
   `start:relay:local` with `.env.relay`; see `.env.relay.example`). It forwards
   each event to its auction's channel, `auction:{auctionId}`, commits offsets
-  only after publishing, skips records it cannot forward, pauses a partition
-  while its publishes fail, and broadcasts a resync on `gateway:control` when
-  it may have skipped events.
+  only after publishing, skips records it cannot forward, and pauses a
+  partition while its publishes fail. A new group starts at the oldest
+  retained event, so no event is skipped.
 - `src/bus/`, the bus contract (channel names and envelopes) and the Valkey
   publisher.
 

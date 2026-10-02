@@ -28,11 +28,10 @@ export interface TestRecord {
   value: string | null;
   // Omitted or undefined: the record has no event-type header.
   eventType?: string | undefined;
-  partition?: number;
 }
 
 // A valid BidAccepted.v1 record for one auction version.
-export function bidAccepted(auctionId: string, version: number, partition?: number): TestRecord {
+export function bidAccepted(auctionId: string, version: number): TestRecord {
   const eventId = randomUUID();
   return {
     key: auctionId,
@@ -47,7 +46,6 @@ export function bidAccepted(auctionId: string, version: number, partition?: numb
       amountMinor: String(100 * version),
       currencyCode: "USD",
     }),
-    ...(partition === undefined ? {} : { partition }),
   };
 }
 
@@ -126,7 +124,6 @@ export class KafkaTestTopics {
             key: record.key,
             value: record.value,
             headers: record.eventType === undefined ? {} : { "event-type": record.eventType },
-            ...(record.partition === undefined ? {} : { partition: record.partition }),
           },
         ],
       });
@@ -143,6 +140,25 @@ export class KafkaTestTopics {
     return new Map(
       (result?.partitions ?? []).map(({ partition, offset }) => [partition, BigInt(offset)]),
     );
+  }
+
+  // The group's committed offset for every partition that holds records.
+  // A partition the group never received a record from has no commit.
+  async committedOffsetsOfNonEmptyPartitions(
+    groupId: string,
+    topic: string,
+  ): Promise<Map<number, bigint | undefined>> {
+    const committed = await this.committedOffsets(groupId, topic);
+    const ends = await this.endOffsets(topic);
+    return new Map(
+      [...ends]
+        .filter(([, end]) => end > 0n)
+        .map(([partition]) => [partition, committed.get(partition)]),
+    );
+  }
+
+  async nonEmptyEndOffsets(topic: string): Promise<Map<number, bigint>> {
+    return new Map([...(await this.endOffsets(topic))].filter(([, end]) => end > 0n));
   }
 
   async endOffsets(topic: string): Promise<Map<number, bigint>> {
@@ -268,57 +284,4 @@ export async function startRelay(options: StartRelayOptions): Promise<RelayRun> 
       await relay.stop();
     },
   };
-}
-
-// Gives a fresh group a committed offset at the end of every partition. A new
-// group starts at the latest offset, so records produced before it is
-// positioned would be skipped; probes are produced until each partition
-// forwards one. Once every probe has been forwarded (the ones produced before
-// positioning never will be, so only later ones count), the relay stops and
-// commits, and later relays in the group start exactly at the end.
-export async function warmUpGroup(
-  topics: KafkaTestTopics,
-  bus: BusRecorder,
-  publisher: BusPublisher,
-  topic: string,
-  groupId: string,
-  partitions: number,
-): Promise<void> {
-  // Unique per warm-up, so probes recorded by earlier tests never count.
-  const probeBase = 900_000_000 + Math.floor(Math.random() * 1_000_000) * 100;
-  const probeAuction = (partition: number) => String(probeBase + partition);
-  await bus.subscribe(
-    ...Array.from({ length: partitions }, (_, partition) =>
-      auctionChannel(probeAuction(partition)),
-    ),
-  );
-  const run = await startRelay({ brokers: topics.brokers, topic, groupId, publisher });
-  try {
-    const lastProbe = new Map<number, string>();
-    let version = 2;
-    const pending = new Set(Array.from({ length: partitions }, (_, partition) => partition));
-    const deadline = Date.now() + 30_000;
-    while (pending.size > 0) {
-      if (Date.now() > deadline) throw new Error("Relay never forwarded probes");
-      await topics.produce(
-        topic,
-        [...pending].map((partition) => bidAccepted(probeAuction(partition), version, partition)),
-      );
-      for (const partition of pending) lastProbe.set(partition, String(version));
-      version += 1;
-      await delay(200);
-      for (const partition of [...pending]) {
-        if (bus.versionsOf(probeAuction(partition)).length > 0) pending.delete(partition);
-      }
-    }
-    await waitFor(
-      () =>
-        [...lastProbe].every(([partition, last]) =>
-          bus.versionsOf(probeAuction(partition)).includes(last),
-        ),
-      "every probe forwarded",
-    );
-  } finally {
-    await run.stop();
-  }
 }

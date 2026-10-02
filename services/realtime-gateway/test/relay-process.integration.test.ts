@@ -4,18 +4,10 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { pino } from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { auctionChannel } from "../src/bus/bus.js";
-import { ValkeyBusPublisher } from "../src/bus/valkey-bus-publisher.js";
-import {
-  bidAccepted,
-  BusRecorder,
-  KafkaTestTopics,
-  waitFor,
-  warmUpGroup,
-} from "./support/relay-harness.js";
+import { bidAccepted, BusRecorder, KafkaTestTopics, waitFor } from "./support/relay-harness.js";
 
 const brokers = process.env.TEST_KAFKA_BROKERS;
 const valkeyNodes = process.env.TEST_VALKEY_NODES;
@@ -33,7 +25,6 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
     const partitions = 3;
     let buildDirectory: string | undefined;
     let topics: KafkaTestTopics;
-    let valkey: ValkeyBusPublisher;
     let bus: BusRecorder;
 
     function relayEnvironment(topic: string, groupId: string): Record<string, string> {
@@ -59,19 +50,12 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
       entryPoint = resolve(buildDirectory, "relay.main.js");
       topics = new KafkaTestTopics(brokers!);
       await topics.connect();
-      valkey = new ValkeyBusPublisher({
-        nodes: valkeyNodes!.split(","),
-        commandTimeoutMs: 2_000,
-        logger: pino({ level: "silent" }),
-      });
-      await valkey.connect();
       bus = new BusRecorder(valkeyNodes!.split(","));
       await bus.connect();
     });
 
     afterAll(async () => {
       await bus?.close();
-      await valkey?.close();
       await topics?.disconnect();
       if (buildDirectory !== undefined) await rm(buildDirectory, { recursive: true, force: true });
     });
@@ -87,7 +71,6 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
     it("republishes after a crash between publish and commit, then drains cleanly on SIGTERM", async () => {
       const topic = await topics.create(partitions);
       const groupId = topics.newGroup();
-      await warmUpGroup(topics, bus, valkey, topic, groupId, partitions);
       const auctionId = "501";
       await bus.subscribe(auctionChannel(auctionId));
       await topics.produce(
@@ -127,7 +110,9 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
       expect(messages).toContain("shutdown requested; finishing in-flight messages");
       expect(messages.at(-1)).toBe("relay stopped");
       // A clean shutdown commits what it forwarded.
-      expect(await topics.committedOffsets(groupId, topic)).toEqual(await topics.endOffsets(topic));
+      expect(await topics.committedOffsetsOfNonEmptyPartitions(groupId, topic)).toEqual(
+        await topics.nonEmptyEndOffsets(topic),
+      );
     });
   },
 );

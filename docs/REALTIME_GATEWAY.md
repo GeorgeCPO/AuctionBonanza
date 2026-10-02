@@ -169,9 +169,8 @@ Status: implemented in `services/realtime-gateway/src/relay/` and run by
 A Kafka consumer in group `realtime-relay`, using the promisified
 `@confluentinc/kafka-javascript` API like the outbox publisher.
 
-The sequence below shows one relay process: how it is assigned partitions,
-how each message is forwarded or skipped, what happens when a publish fails,
-and how it shuts down. The numbered steps are explained in the rest of this
+The sequence below shows one relay process: how each message is forwarded or
+skipped, what happens when a publish fails, and how it shuts down. The numbered steps are explained in the rest of this
 section.
 
 ```mermaid
@@ -179,32 +178,14 @@ sequenceDiagram
     autonumber
     participant K as Kafka consumer group<br/>(auction.events)
     participant R as EventRelay
-    participant S as ResyncBroadcaster
     participant D as decideRelay
     participant P as ValkeyBusPublisher
     participant V as Valkey cluster
 
-    Note over K,V: Assignment (rebalance callback, awaited before the assignment applies)
-    K->>R: rebalance_cb(assign, partitions)
-    R->>K: committed(partitions)
-    K-->>R: committed offsets
-    opt a partition has no committed offset
-        R->>S: request(reason)
-        S-)P: publish(gateway:control, resync) in the background, retried with backoff
-        P->>V: SPUBLISH gateway:control
-    end
-
+    Note over K: a partition without a committed offset starts at the oldest retained event
     Note over K,V: Per message, one at a time within a partition
     loop each message
         K->>R: eachMessage(partition, offset, record)
-        opt first message after assignment and offset differs from the committed offset
-            R->>S: request(reason)
-        end
-        R->>S: publishPending()
-        opt a resync is pending
-            S->>P: publish(gateway:control, resync)
-            P->>V: SPUBLISH gateway:control
-        end
         R->>D: decideRelay(key, value, event-type)
         alt valid event
             D-->>R: publish(auction:{auctionId}, envelope)
@@ -239,15 +220,13 @@ sequenceDiagram
 
 Per message, in partition order:
 
-1. Check continuity (see [offset resets](#offset-resets-and-resync)), and
-   publish a pending resync first if there is one.
-2. Read the `event-type` header. A type without a relay contract is logged at
+1. Read the `event-type` header. A type without a relay contract is logged at
    `warn` and skipped. New event types are added to the relay before producers
    emit them.
-3. Parse the value with the contract parser, for example `parseBidAcceptedV1`,
+2. Parse the value with the contract parser, for example `parseBidAcceptedV1`,
    and check that the record key equals the event's `auctionId`.
-4. Wrap it in the bus envelope and `SPUBLISH` it to `auction:{auctionId}`.
-5. Return from the handler, which marks the offset as processed.
+3. Wrap it in the bus envelope and `SPUBLISH` it to `auction:{auctionId}`.
+4. Return from the handler, which marks the offset as processed.
 
 **Acknowledgement boundary.** The Kafka client stores a message's offset only
 after its handler resolves, and librdkafka's auto-commit (every
@@ -285,41 +264,39 @@ reconnects, and without the bound a publish could wait indefinitely.
 | Setting                          | Value                            | Reason                                                                                                                                                                                                                                                             |
 | -------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `partition.assignment.strategy`  | `cooperative-sticky`             | A rebalance moves only the partitions that must move; other relays keep forwarding.                                                                                                                                                                                |
-| `auto.offset.reset`              | `latest`                         | A partition without a usable committed offset starts at the end, because edges start from live-state snapshots rather than from history. The relay then broadcasts a resync so no edge keeps state that predates the skipped range.                                |
+| `auto.offset.reset`              | `earliest`                       | A partition without a usable committed offset starts at the oldest retained event, so no event is skipped; see [offset resets](#offset-resets).                                                                                                                    |
 | `enable.auto.commit`             | `true`, of stored offsets only   | The client stores an offset only after its handler resolved; see the acknowledgement boundary above. `enable.auto.offset.store` is always `false` in this client's promisified API.                                                                                |
 | `session.timeout.ms`             | `RELAY_SESSION_TIMEOUT_MS`, 10 s | How long a crashed relay keeps its partitions before the group reassigns them, and so how long their live updates stall. Lower than librdkafka's 45 s default because a relay is cheap to replace; the broker's `group.min.session.timeout.ms` (6 s) is the floor. |
 | `partitionsConsumedConcurrently` | `RELAY_PARTITION_CONCURRENCY`, 4 | Partitions handled in parallel by one process. Each partition is still handled one message at a time.                                                                                                                                                              |
 
-### Offset resets and resync
+### Offset resets
 
-An offset reset skips events, and an edge cannot notice skipped events for an
-auction that never changes again. So whenever the relay may have skipped
-events, it publishes `{ "v": 1, "type": "resync", "reason": … }` on the
-control channel `gateway:control` before it forwards anything else, and every
-edge refreshes all of its auctions. There are two detection points:
+A partition has no usable committed offset when the group is new, when the
+broker expired the group's offsets (after it was empty for longer than
+`offsets.retention.minutes`, 7 days by default), or when the committed offset
+points at records that retention already deleted. `auto.offset.reset =
+earliest` then starts the relay at the oldest retained event.
 
-- **On assignment.** The rebalance callback, which the client awaits before
-  applying an assignment, reads the group's committed offsets. A partition
-  without one (a new group, offsets expired after the group was empty longer
-  than the broker's `offsets.retention.minutes`, or an operator reset) starts
-  at the latest offset, so the relay requests a resync at once. It is
-  published in the background as well, because a partition that receives no
-  new messages must not delay it.
-- **On the first message after assignment.** Its offset must equal the
-  committed offset. Anything else means the client reset its position, most
-  likely because retention deleted records the group had not read yet, so the
-  relay requests a resync before forwarding that message.
+- **New or expired group:** the relay replays the retained history (up to the
+  topic's 7 days) through Valkey once. Edges drop every event at or below the
+  version they already hold, so the replay costs bus traffic, not
+  correctness. A new relay group is rare: groups are long-lived, and scaling
+  adds members to the existing group.
+- **Retention deleted unread events:** those events are gone, so the relay
+  continues from the oldest one left. This is the one way the relay skips
+  events. Edges notice the version gap on the next event of each affected
+  auction and resync it. An auction with no later event stays stale until its
+  edge refreshes for another reason, for example a restart. It requires the
+  relay group to fall more than the topic's retention behind, an outage an
+  operator would already be handling. An integration test pins this behavior
+  down.
 
-A reset that skips records and is followed by no new record on that partition
-is detected only by the first check. That leaves one gap: a committed offset
-that retention overtook on a partition that then stays silent. It requires the
-relay group to fall more than the topic's retention (7 days locally) behind,
-which is an outage an operator would already be handling.
-
-The client reports "no committed offset" as a negative offset, and also turns
-a committed offset of 0 into `null`. The relay never commits 0 (it commits the
-offset after a processed message), so both are treated as "none"; an operator
-who sets a group to offset 0 gets one unnecessary resync.
+An earlier version started new groups at the latest offset instead, to avoid
+the replay. Every reset then skipped events, so the relay had to detect resets
+(committed offsets read in the rebalance callback, and a continuity check on
+the first message) and broadcast a resync to every edge on a control channel.
+Starting at `earliest` removes that machinery at the cost of the occasional
+replay.
 
 **Ordering.** Valkey delivers the messages of one channel in the order one
 connection published them. The relay publishes a partition's messages in order,
@@ -329,8 +306,7 @@ version check handles the duplicates and reordering this causes.
 
 ## Bus
 
-**Channel:** `auction:{auctionId}`, one per auction, plus `gateway:control` for
-resync broadcasts.
+**Channel:** `auction:{auctionId}`, one per auction.
 
 **Why sharded pub/sub.** In cluster mode, classic `PUBLISH` is broadcast to
 every node in the cluster, so adding shards adds cost instead of capacity.
@@ -521,7 +497,6 @@ buffered events that are still newer, and sends every watching client a fresh
 - A gap, for one auction.
 - Any trigger of the [shard subscriber](#edge-shard-subscriber), for every
   auction whose subscription may have been interrupted.
-- `{ "type": "resync" }` on `gateway:control`, for every auction.
 
 Mass resyncs go through the bulk endpoint with bounded concurrency and jitter,
 so that a Valkey failover, which hits every edge at once, does not turn into a
@@ -587,23 +562,24 @@ reconnects.
 
 ## Failure scenarios
 
-| Scenario                                             | What happens                                                                                                                                                                        | Client sees                                                |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Kafka delivers an event 5 times                      | The relay forwards each copy. The edge applies the first and drops the rest (`v ≤ c`).                                                                                              | One change.                                                |
-| Outbox late duplicate `v, v+1, v`                    | The edge drops the second `v`.                                                                                                                                                      | `v`, `v+1`.                                                |
-| Relay crashes after `SPUBLISH`, before commit        | Its partitions stall until the group's session timeout (`RELAY_SESSION_TIMEOUT_MS`) expires; then another relay re-reads from the committed offset and publishes again.             | Nothing extra; edges drop the duplicates.                  |
-| Relay publishes `v+1` before `v` (rebalance overlap) | The edge sees a gap, resyncs, then drops `v` when it arrives.                                                                                                                       | A `snapshot` at `v+1` or later.                            |
-| Malformed event on the topic                         | The relay logs and skips it. The next event of that auction reveals the gap.                                                                                                        | A `snapshot` once the auction changes again.               |
-| All relays down, or lagging                          | Nothing is published. Edges keep serving their last state. When relays recover they forward the backlog in order, and edges drop what is already reflected.                         | Correct but stale state, then the missed changes in order. |
-| Relay offsets reset to latest                        | The relay broadcasts `resync` before forwarding. Every edge refreshes every auction.                                                                                                | A `snapshot` per auction.                                  |
-| Valkey unavailable                                   | Relays pause and stop committing. Edges lose their subscriptions and keep retrying. When Valkey returns, edges resubscribe and resync, and relays forward the backlog.              | Stale state during the outage, then `snapshot`s.           |
-| One Valkey shard fails over                          | Connections to that shard drop. Edges resync the auctions on it; relays retry publishes to it.                                                                                      | A `snapshot` for the affected auctions.                    |
-| Valkey resharding moves a slot                       | Edges learn of it from `sunsubscribe`, a `MOVED` reply, or the periodic topology check, resubscribe at the new owner, and resync those auctions.                                    | A `snapshot` for the affected auctions.                    |
-| Edge too slow for Valkey                             | Valkey closes the edge's connection; the edge reconnects and resyncs.                                                                                                               | A `snapshot` per watched auction.                          |
-| `auction-service` unavailable during a resync        | The auction stays `syncing` and its events stay buffered, with a bound. Fetches retry with backoff. On buffer overflow the buffer is discarded, since the fetch replaces it anyway. | Last good state, no changes until the fetch succeeds.      |
-| An edge crashes                                      | Its clients reconnect through the load balancer to other edges, which serve memory or fetch in bulk.                                                                                | A reconnect, then `snapshot`s.                             |
-| Rolling edge deploy                                  | A draining edge stops accepting connections and closes existing ones spread over a drain window, so clients do not all reconnect at the same instant.                               | A reconnect, then `snapshot`s.                             |
-| Slow client                                          | The edge conflates that connection.                                                                                                                                                 | Skipped intermediate prices, then current `snapshot`s.     |
+| Scenario                                             | What happens                                                                                                                                                                        | Client sees                                                                     |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Kafka delivers an event 5 times                      | The relay forwards each copy. The edge applies the first and drops the rest (`v ≤ c`).                                                                                              | One change.                                                                     |
+| Outbox late duplicate `v, v+1, v`                    | The edge drops the second `v`.                                                                                                                                                      | `v`, `v+1`.                                                                     |
+| Relay crashes after `SPUBLISH`, before commit        | Its partitions stall until the group's session timeout (`RELAY_SESSION_TIMEOUT_MS`) expires; then another relay re-reads from the committed offset and publishes again.             | Nothing extra; edges drop the duplicates.                                       |
+| Relay publishes `v+1` before `v` (rebalance overlap) | The edge sees a gap, resyncs, then drops `v` when it arrives.                                                                                                                       | A `snapshot` at `v+1` or later.                                                 |
+| Malformed event on the topic                         | The relay logs and skips it. The next event of that auction reveals the gap.                                                                                                        | A `snapshot` once the auction changes again.                                    |
+| All relays down, or lagging                          | Nothing is published. Edges keep serving their last state. When relays recover they forward the backlog in order, and edges drop what is already reflected.                         | Correct but stale state, then the missed changes in order.                      |
+| Relay group new, or its offsets expired              | The relay replays the retained history from the oldest event. Edges drop what they already reflect.                                                                                 | Nothing extra; possibly duplicates, which edges drop.                           |
+| Retention deleted events the relay had not read      | The relay continues from the oldest retained event; those events are skipped.                                                                                                       | A `snapshot` once each affected auction changes again; until then, stale state. |
+| Valkey unavailable                                   | Relays pause and stop committing. Edges lose their subscriptions and keep retrying. When Valkey returns, edges resubscribe and resync, and relays forward the backlog.              | Stale state during the outage, then `snapshot`s.                                |
+| One Valkey shard fails over                          | Connections to that shard drop. Edges resync the auctions on it; relays retry publishes to it.                                                                                      | A `snapshot` for the affected auctions.                                         |
+| Valkey resharding moves a slot                       | Edges learn of it from `sunsubscribe`, a `MOVED` reply, or the periodic topology check, resubscribe at the new owner, and resync those auctions.                                    | A `snapshot` for the affected auctions.                                         |
+| Edge too slow for Valkey                             | Valkey closes the edge's connection; the edge reconnects and resyncs.                                                                                                               | A `snapshot` per watched auction.                                               |
+| `auction-service` unavailable during a resync        | The auction stays `syncing` and its events stay buffered, with a bound. Fetches retry with backoff. On buffer overflow the buffer is discarded, since the fetch replaces it anyway. | Last good state, no changes until the fetch succeeds.                           |
+| An edge crashes                                      | Its clients reconnect through the load balancer to other edges, which serve memory or fetch in bulk.                                                                                | A reconnect, then `snapshot`s.                                                  |
+| Rolling edge deploy                                  | A draining edge stops accepting connections and closes existing ones spread over a drain window, so clients do not all reconnect at the same instant.                               | A reconnect, then `snapshot`s.                                                  |
+| Slow client                                          | The edge conflates that connection.                                                                                                                                                 | Skipped intermediate prices, then current `snapshot`s.                          |
 
 **Known limitation:** an edge cannot tell a quiet auction from a stalled relay.
 Clients see correct but possibly old state without an indication of it. A later
@@ -642,7 +618,9 @@ Integration tests against real Kafka, Valkey, and PostgreSQL from the root
   after recovery.
 - A malformed event is skipped, logged, and committed; the next event of that
   auction causes a resync.
-- A partition without a committed offset triggers a `gateway:control` resync.
+- A new group forwards events produced before it started.
+- After retention deleted unread events, the relay continues from the oldest
+  retained event.
 - A slow client is conflated and ends at the current state.
 - The version trigger rejects a version bump without an outbox event, and a
   bump by more than one.
@@ -660,7 +638,7 @@ Integration tests against real Kafka, Valkey, and PostgreSQL from the root
    `CLUSTER SHARDS`, and slot migration needs a second primary to move to. The
    integration tests are gated on `TEST_VALKEY_NODES`.
 3. **Relay:** the consumer, envelope, publish-then-commit, pause on Valkey
-   failure, and the offset-reset resync.
+   failure, and starting new groups at the oldest retained event.
 4. **Edge:** the shard subscriber, the subscription registry, live-state fetches, the version rule,
    SSE, heartbeats, conflation, and graceful drain.
 5. **Documentation and exercises:** update this document from "proposed", then
