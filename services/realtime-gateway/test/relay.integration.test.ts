@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pino } from "pino";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { auctionChannel, CONTROL_CHANNEL } from "../src/bus/bus.js";
+import { auctionChannel } from "../src/bus/bus.js";
 import { ValkeyBusPublisher } from "../src/bus/valkey-bus-publisher.js";
 import {
   bidAccepted,
@@ -13,7 +13,6 @@ import {
   ScriptedPublisher,
   startRelay,
   waitFor,
-  warmUpGroup,
   type RelayRun,
   type StartRelayOptions,
 } from "./support/relay-harness.js";
@@ -37,18 +36,8 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
       return relayRun;
     }
 
-    // A topic and a group whose relays resume from committed end offsets.
-    async function warmTopic(): Promise<{ topic: string; groupId: string }> {
-      const topic = await topics.create(partitions);
-      const groupId = topics.newGroup();
-      await warmUpGroup(topics, bus, valkey, topic, groupId, partitions);
-      return { topic, groupId };
-    }
-
-    function controlMessages(): Record<string, unknown>[] {
-      return bus.messages
-        .filter(({ channel }) => channel === CONTROL_CHANNEL)
-        .map(({ message }) => JSON.parse(message) as Record<string, unknown>);
+    async function freshTopic(): Promise<{ topic: string; groupId: string }> {
+      return { topic: await topics.create(partitions), groupId: topics.newGroup() };
     }
 
     beforeAll(async () => {
@@ -62,7 +51,6 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
       await valkey.connect();
       bus = new BusRecorder(valkeyNodes!);
       await bus.connect();
-      await bus.subscribe(CONTROL_CHANNEL);
     });
 
     afterEach(async () => {
@@ -75,19 +63,19 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
       await topics?.disconnect();
     });
 
-    it("forwards each auction's events to its channel in offset order and commits them", async () => {
-      const { topic, groupId } = await warmTopic();
+    it("forwards events produced before a new group started, per auction in offset order, and commits them", async () => {
+      const { topic, groupId } = await freshTopic();
       const auctions = ["101", "102", "103", "104"];
       await bus.subscribe(...auctions.map(auctionChannel));
       const versions = [2, 3, 4, 5, 6, 7, 8];
-      // Interleaved across auctions, as a busy topic would be.
+      // Interleaved across auctions, as a busy topic would be, and all of it
+      // before the group exists: a new group starts at the oldest event.
       await topics.produce(
         topic,
         versions.flatMap((version) => auctions.map((auctionId) => bidAccepted(auctionId, version))),
       );
 
-      const publisher = new ScriptedPublisher(valkey);
-      const relayRun = await run({ topic, groupId, publisher });
+      const relayRun = await run({ topic, groupId, publisher: valkey });
       await waitFor(
         () => auctions.every((auctionId) => bus.versionsOf(auctionId).length === versions.length),
         "every event on its auction channel",
@@ -97,13 +85,36 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
       for (const auctionId of auctions) {
         expect(bus.versionsOf(auctionId)).toEqual(versions.map(String));
       }
-      // Resuming from committed offsets skips nothing, so no resync is sent.
-      expect(publisher.published.some(({ channel }) => channel === CONTROL_CHANNEL)).toBe(false);
-      expect(await topics.committedOffsets(groupId, topic)).toEqual(await topics.endOffsets(topic));
+      expect(await topics.committedOffsetsOfNonEmptyPartitions(groupId, topic)).toEqual(
+        await topics.nonEmptyEndOffsets(topic),
+      );
+    });
+
+    it("resumes from its committed offset after a restart, without replaying", async () => {
+      const { topic, groupId } = await freshTopic();
+      const auctionId = "151";
+      await bus.subscribe(auctionChannel(auctionId));
+      await topics.produce(
+        topic,
+        [2, 3].map((version) => bidAccepted(auctionId, version)),
+      );
+      const first = await run({ topic, groupId, publisher: valkey });
+      await waitFor(() => bus.versionsOf(auctionId).length === 2, "the first two events");
+      await first.stop();
+
+      await topics.produce(
+        topic,
+        [4, 5].map((version) => bidAccepted(auctionId, version)),
+      );
+      const second = await run({ topic, groupId, publisher: valkey });
+      await waitFor(() => bus.versionsOf(auctionId).length === 4, "the next two events");
+      await second.stop();
+
+      expect(bus.versionsOf(auctionId)).toEqual(["2", "3", "4", "5"]);
     });
 
     it("skips records it cannot forward, reports them, and commits past them", async () => {
-      const { topic, groupId } = await warmTopic();
+      const { topic, groupId } = await freshTopic();
       const auctionId = "201";
       await bus.subscribe(auctionChannel(auctionId));
       const produced = await topics.produce(topic, [
@@ -136,11 +147,13 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
           [produced[4]!.partition, produced[4]!.offset.toString(), "malformed"],
         ]),
       );
-      expect(await topics.committedOffsets(groupId, topic)).toEqual(await topics.endOffsets(topic));
+      expect(await topics.committedOffsetsOfNonEmptyPartitions(groupId, topic)).toEqual(
+        await topics.nonEmptyEndOffsets(topic),
+      );
     });
 
     it("retries a failed publish without committing past it or letting later events overtake it", async () => {
-      const { topic, groupId } = await warmTopic();
+      const { topic, groupId } = await freshTopic();
       const auctionId = "301";
       await bus.subscribe(auctionChannel(auctionId));
       const produced = await topics.produce(
@@ -171,64 +184,38 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
       await relayRun.stop();
 
       expect(bus.versionsOf(auctionId)).toEqual(["2", "3", "4", "5", "6"]);
-      expect(await topics.committedOffsets(groupId, topic)).toEqual(await topics.endOffsets(topic));
-    });
-
-    it("broadcasts a resync before forwarding anything when partitions have no committed offset", async () => {
-      const topic = await topics.create(partitions);
-      const groupId = topics.newGroup();
-      const publisher = new ScriptedPublisher(valkey);
-      const controlBefore = controlMessages().length;
-
-      await run({ topic, groupId, publisher });
-
-      await waitFor(
-        () => controlMessages().length > controlBefore,
-        "a resync on the control channel",
+      expect(await topics.committedOffsetsOfNonEmptyPartitions(groupId, topic)).toEqual(
+        await topics.nonEmptyEndOffsets(topic),
       );
-      expect(controlMessages().at(-1)).toMatchObject({ v: 1, type: "resync" });
-      expect(String(controlMessages().at(-1)!.reason)).toContain("without a committed offset");
-      expect(publisher.published[0]?.channel).toBe(CONTROL_CHANNEL);
     });
 
-    it("broadcasts a resync before the next forwarded event when retention removed the committed position", async () => {
-      const { topic, groupId } = await warmTopic();
+    // The one way this relay skips events: retention deletes records the
+    // group has not read yet. The client then restarts at the oldest
+    // retained record. Edges notice the version gap on that record and
+    // resync; an auction with no later event stays stale. See "Offset
+    // resets" in docs/REALTIME_GATEWAY.md.
+    it("continues from the oldest retained event when retention deleted events it had not read", async () => {
+      const { topic, groupId } = await freshTopic();
       const auctionId = "401";
       await bus.subscribe(auctionChannel(auctionId));
-      // Events the group never read are deleted, as retention would: its
-      // committed offset now lies before the log start, so the relay's
-      // position is reset to the end and those events are skipped.
-      const produced = await topics.produce(
+      await topics.produce(topic, [bidAccepted(auctionId, 2)]);
+      const first = await run({ topic, groupId, publisher: valkey });
+      await waitFor(() => bus.versionsOf(auctionId).length === 1, "the first event");
+      await first.stop();
+
+      const unread = await topics.produce(
         topic,
-        [2, 3, 4].map((version) => bidAccepted(auctionId, version)),
+        [3, 4, 5].map((version) => bidAccepted(auctionId, version)),
       );
-      const { partition } = produced[0]!;
-      await topics.deleteRecordsBefore(topic, partition, produced[2]!.offset + 1n);
+      const { partition } = unread[0]!;
+      await topics.deleteRecordsBefore(topic, partition, unread[2]!.offset + 1n);
+      await topics.produce(topic, [bidAccepted(auctionId, 6)]);
 
-      const publisher = new ScriptedPublisher(valkey);
-      await run({ topic, groupId, publisher });
+      const second = await run({ topic, groupId, publisher: valkey });
+      await waitFor(() => bus.versionsOf(auctionId).length === 2, "the retained event");
+      await second.stop();
 
-      // After the reset the relay sees only records produced from now on.
-      let version = 5;
-      const deadline = Date.now() + 30_000;
-      while (bus.versionsOf(auctionId).length === 0) {
-        if (Date.now() > deadline) throw new Error("No event forwarded after the reset");
-        await topics.produce(topic, [bidAccepted(auctionId, version)]);
-        version += 1;
-        await delay(200);
-      }
-
-      const resyncIndex = publisher.published.findIndex(
-        ({ channel }) => channel === CONTROL_CHANNEL,
-      );
-      const firstEventIndex = publisher.published.findIndex(
-        ({ channel }) => channel === auctionChannel(auctionId),
-      );
-      expect(resyncIndex).toBeGreaterThanOrEqual(0);
-      expect(resyncIndex).toBeLessThan(firstEventIndex);
-      const resync = JSON.parse(publisher.published[resyncIndex]!.message) as { reason: string };
-      expect(resync.reason).toContain(`partition ${partition} resumed at offset`);
-      expect(bus.versionsOf(auctionId)).not.toContain("2");
+      expect(bus.versionsOf(auctionId)).toEqual(["2", "6"]);
     });
   },
 );
