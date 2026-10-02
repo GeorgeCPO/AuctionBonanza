@@ -4,12 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "pnpm --filter @auction-bonanza/contracts build && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
-    "test": "vitest run --passWithNoTests",
+    "start:relay": "node dist/relay.main.js",
+    "start:relay:local": "node --env-file-if-exists=.env.relay dist/relay.main.js",
+    "test": "pnpm --filter @auction-bonanza/contracts build && vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@auction-bonanza/contracts": "workspace:*",
+    "@confluentinc/kafka-javascript": "1.10.1",
+    "@sinclair/typebox": "0.34.52",
+    "pino": "10.3.1",
     "redis": "6.2.1"
   },
   "devDependencies": {

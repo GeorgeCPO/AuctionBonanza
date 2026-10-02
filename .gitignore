@@ -4,5 +4,6 @@ dist/
 coverage/
 .env
 .env.outbox-publisher
+.env.relay
 .DS_Store
 services/identity-service/.local-keys/

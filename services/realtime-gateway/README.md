@@ -1,11 +1,32 @@
 # Realtime Gateway
 
-Independently buildable and testable foundation for the realtime gateway.
+Streams committed auction changes to clients. It must not decide whether a bid
+is valid or become the source of auction truth: everything it shows can be
+rebuilt from `auction-service`.
 
-Its initial responsibility is consuming committed auction events and delivering client updates over Server-Sent Events. It must not decide whether a bid is valid or become the source of auction truth.
+The design is in [`docs/REALTIME_GATEWAY.md`](../../docs/REALTIME_GATEWAY.md):
+a **relay** tier that consumes `auction.events` and scales with partitions,
+and an **edge** tier that serves Server-Sent Events and scales with
+connections, connected by Valkey sharded pub/sub.
 
-The current entry point is intentionally minimal. Event consumption, SSE
-delivery, and runtime configuration will be added in later milestones.
+Implemented so far:
 
-The proposed relay/edge design is in
-[`docs/REALTIME_GATEWAY.md`](../../docs/REALTIME_GATEWAY.md).
+- `src/relay.main.ts`, the relay process (`start:relay`, or
+  `start:relay:local` with `.env.relay`; see `.env.relay.example`). It forwards
+  each event to its auction's channel, `auction:{auctionId}`, commits offsets
+  only after publishing, skips records it cannot forward, pauses a partition
+  while its publishes fail, and broadcasts a resync on `gateway:control` when
+  it may have skipped events.
+- `src/bus/`, the bus contract (channel names and envelopes) and the Valkey
+  publisher.
+
+The SSE edge is the next slice; `src/index.ts` is still a placeholder.
+
+Integration tests need Kafka and the Valkey cluster from the root
+`docker-compose.yml`:
+
+```sh
+TEST_KAFKA_BROKERS=localhost:9092 \
+TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
+pnpm --filter @auction-bonanza/realtime-gateway test
+```

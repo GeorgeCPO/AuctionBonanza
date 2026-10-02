@@ -100,6 +100,7 @@ TEST_KAFKA_BROKERS=localhost:9092 \
 TEST_KAFKA_FAULT_INJECTION_UPSTREAM=localhost:19093 \
 pnpm --filter @auction-bonanza/auction-service test
 
+TEST_KAFKA_BROKERS=localhost:9092 \
 TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
 pnpm --filter @auction-bonanza/realtime-gateway test
 ```
@@ -193,3 +194,17 @@ pnpm --filter @auction-bonanza/auction-service start:outbox-publisher:local
 
 Its delivery and ordering guarantees are described in
 [`docs/OUTBOX_PUBLISHING.md`](docs/OUTBOX_PUBLISHING.md).
+
+The realtime gateway's relay forwards those events from Kafka to the Valkey
+cluster, one sharded channel per auction:
+
+```sh
+cp services/realtime-gateway/.env.relay.example services/realtime-gateway/.env.relay
+pnpm --filter @auction-bonanza/realtime-gateway build
+pnpm --filter @auction-bonanza/realtime-gateway start:relay:local
+```
+
+Watch an auction's channel with
+`docker compose exec valkey-1 valkey-cli -c -p 7001 ssubscribe auction:<id>`
+(`-c` follows the redirect to the node that owns the channel). Its guarantees
+are described in [`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md#relay).
