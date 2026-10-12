@@ -65,7 +65,9 @@ describe.skipIf(databaseUrl === undefined)("auction live-state PostgreSQL read",
       amountMinor,
       idempotencyKey: randomUUID(),
     });
-    if (outcome.kind !== "placed") throw new Error(`Fixture bid was not placed: ${outcome.kind}`);
+    if (outcome.kind !== "placed") {
+      throw new Error(`Fixture bid was not placed: ${outcome.kind}`);
+    }
     return outcome;
   }
 
