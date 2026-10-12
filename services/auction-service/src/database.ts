@@ -73,7 +73,9 @@ export function wrapPool(pool: Pool): DatabasePool {
       client.on("error", onError);
       return {
         query: async (text, values) => {
-          if (connectionError !== undefined) throw connectionError;
+          if (connectionError !== undefined) {
+            throw connectionError;
+          }
           return client.query(text, values as unknown[] | undefined);
         },
         release: (error) => {

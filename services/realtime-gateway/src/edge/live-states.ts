@@ -11,7 +11,7 @@ import type {
 } from "./live-states.types.js";
 
 // The most ids auction-service accepts in one live-state request.
-export const MAX_LIVE_STATE_IDS_PER_REQUEST = 100;
+const MAX_LIVE_STATE_IDS_PER_REQUEST = 100;
 
 const timestamp = Type.String({ minLength: 1, maxLength: 40 });
 const decimalId = Type.String({ pattern: "^[1-9][0-9]{0,18}$" });
