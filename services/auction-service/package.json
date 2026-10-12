@@ -13,7 +13,9 @@
     "start:outbox-publisher": "node dist/outbox-publisher.main.js",
     "start:outbox-publisher:local": "node --env-file-if-exists=.env.outbox-publisher dist/outbox-publisher.main.js",
     "test:unit": "pnpm run build:deps && vitest run -c vitest.unit.config.ts",
+    "test:unit:coverage": "pnpm run build:deps && vitest run -c vitest.unit.config.ts --coverage",
     "test:integration": "pnpm run build:deps && vitest run -c vitest.integration.config.ts",
+    "test:integration:coverage": "pnpm run build:deps && vitest run -c vitest.integration.config.ts --coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -29,6 +31,7 @@
   "devDependencies": {
     "@types/node": "24.13.3",
     "@types/pg": "8.15.5",
+    "@vitest/coverage-v8": "4.1.11",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   },
