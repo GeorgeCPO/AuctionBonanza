@@ -23,7 +23,10 @@ export class SerialByKey {
     void finished.then(() => {
       // Only the newest task clears the key. If another was requested while
       // this one ran, the entry now belongs to it.
-      if (this.lastFinished.get(key) === finished) this.lastFinished.delete(key);
+      const newest = this.lastFinished.get(key);
+      if (newest === finished) {
+        this.lastFinished.delete(key);
+      }
     });
 
     return result;

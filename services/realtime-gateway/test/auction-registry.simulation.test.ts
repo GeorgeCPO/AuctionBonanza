@@ -131,7 +131,9 @@ class SimClient implements AuctionWatcher {
   send(frame: string): void {
     const event = /^event: (.+)$/m.exec(frame)?.[1];
     const dataLine = /^data: (.+)$/m.exec(frame)?.[1];
-    if (event === undefined || dataLine === undefined) return; // heartbeat
+    if (event === undefined || dataLine === undefined) {
+      return;
+    } // heartbeat
     const data = JSON.parse(dataLine) as {
       auctionVersion?: string;
       leadingBid?: { bidId: string; amountMinor: string } | null;
@@ -205,7 +207,9 @@ class Simulation {
       await this.randomStep(step >= steps - QUIET_TAIL_STEPS);
       await this.flush();
       this.assertNoViolations();
-      if ((step + 1) % CHECKPOINT_EVERY === 0) await this.checkpoint();
+      if ((step + 1) % CHECKPOINT_EVERY === 0) {
+        await this.checkpoint();
+      }
     }
     await this.checkpoint();
     return this.registry.stats();
@@ -225,21 +229,43 @@ class Simulation {
     const { rng } = this;
     // Rolls below 26 are commits and creation; skip them when quiet.
     const roll = quiet ? 26 + rng.int(74) : rng.int(100);
-    if (roll < 22) return this.commit();
-    if (roll < 26) return this.create();
-    if (roll < 44) return this.deliverInflight();
-    if (roll < 49) return this.redeliverOldEvent();
-    if (roll < 62) return this.answerRead();
-    if (roll < 67) return this.interrupt();
-    if (roll < 76) return this.restore();
-    if (roll < 78) return this.loseSubscription();
-    if (roll < 90) return this.tick();
-    if (roll < 95) return this.join();
+    if (roll < 22) {
+      return this.commit();
+    }
+    if (roll < 26) {
+      return this.create();
+    }
+    if (roll < 44) {
+      return this.deliverInflight();
+    }
+    if (roll < 49) {
+      return this.redeliverOldEvent();
+    }
+    if (roll < 62) {
+      return this.answerRead();
+    }
+    if (roll < 67) {
+      return this.interrupt();
+    }
+    if (roll < 76) {
+      return this.restore();
+    }
+    if (roll < 78) {
+      return this.loseSubscription();
+    }
+    if (roll < 90) {
+      return this.tick();
+    }
+    if (roll < 95) {
+      return this.join();
+    }
     return this.leave();
   }
 
   private commit(): void {
-    if (!this.exists) return;
+    if (!this.exists) {
+      return;
+    }
     this.version += 1;
     const message = serializeAuctionEvent(
       "BidAccepted.v1",
@@ -247,7 +273,9 @@ class Simulation {
     );
     this.published.push(message);
     // A connection that is down accepts nothing.
-    if (this.connectionUp) this.inflight.push(message);
+    if (this.connectionUp) {
+      this.inflight.push(message);
+    }
     this.log(`commit v${this.version}${this.connectionUp ? "" : " (lost: connection down)"}`);
   }
 
@@ -257,31 +285,41 @@ class Simulation {
   // docs/REALTIME_GATEWAY.md), so the world creates the auction together with
   // its first bid, which is the part of the lifecycle the edge does cover.
   private create(): void {
-    if (this.exists) return;
+    if (this.exists) {
+      return;
+    }
     this.exists = true;
     this.log("create auction (v1, no event)");
     this.commit();
   }
 
   private deliverInflight(): void {
-    if (this.inflight.length === 0) return;
+    if (this.inflight.length === 0) {
+      return;
+    }
     const index = this.rng.int(this.inflight.length); // any order
     const message = this.inflight[index]!;
     // Sometimes the bus keeps a copy, so the same event arrives again later.
-    if (!this.rng.chance(0.2)) this.inflight.splice(index, 1);
+    if (!this.rng.chance(0.2)) {
+      this.inflight.splice(index, 1);
+    }
     this.log(`deliver ${versionOf(message)}`);
     this.bus.deliver(this.channel, message);
   }
 
   private redeliverOldEvent(): void {
-    if (this.published.length === 0 || !this.connectionUp) return;
+    if (this.published.length === 0 || !this.connectionUp) {
+      return;
+    }
     const message = this.published[this.rng.int(this.published.length)]!;
     this.log(`late copy of ${versionOf(message)}`);
     this.bus.deliver(this.channel, message);
   }
 
   private answerRead(): void {
-    if (this.liveStates.pending.length === 0) return;
+    if (this.liveStates.pending.length === 0) {
+      return;
+    }
     const [read] = this.liveStates.pending.splice(this.rng.int(this.liveStates.pending.length), 1);
     if (this.rng.chance(0.15)) {
       this.log("read fails");
@@ -296,7 +334,9 @@ class Simulation {
   }
 
   private interrupt(): void {
-    if (!this.connectionUp) return;
+    if (!this.connectionUp) {
+      return;
+    }
     this.connectionUp = false;
     this.inflight = []; // what the connection had not delivered is gone
     this.log("connection lost (in-flight events lost)");
@@ -304,14 +344,18 @@ class Simulation {
   }
 
   private restore(): void {
-    if (this.connectionUp) return;
+    if (this.connectionUp) {
+      return;
+    }
     this.connectionUp = true;
     this.log("connection restored");
     this.bus.restoreConnection();
   }
 
   private loseSubscription(): void {
-    if (!this.connectionUp || !this.bus.listeners.has(this.channel)) return;
+    if (!this.connectionUp || !this.bus.listeners.has(this.channel)) {
+      return;
+    }
     this.inflight = []; // nothing listens until the edge subscribes again
     this.log("subscription dropped (in-flight events lost)");
     this.bus.loseSubscription(this.channel);
@@ -324,7 +368,9 @@ class Simulation {
   }
 
   private join(): void {
-    if (this.clients.length >= 4) return;
+    if (this.clients.length >= 4) {
+      return;
+    }
     const client = new SimClient(`client${this.everJoined.length + 1}`);
     this.clients.push(client);
     this.everJoined.push(client);
@@ -333,7 +379,9 @@ class Simulation {
   }
 
   private leave(): void {
-    if (this.clients.length === 0) return;
+    if (this.clients.length === 0) {
+      return;
+    }
     const [client] = this.clients.splice(this.rng.int(this.clients.length), 1);
     this.log(`${client!.name} leaves`);
     this.registry.unwatch(AUCTION, client!);
@@ -365,7 +413,9 @@ class Simulation {
         this.registry.stats().syncing === 0 &&
         this.liveStates.pending.length === 0 &&
         this.inflight.length === 0;
-      if (quiet) return;
+      if (quiet) {
+        return;
+      }
     }
     this.fail("the edge never finished syncing after the world went quiet");
   }
@@ -378,7 +428,9 @@ class Simulation {
 
   private assertNoViolations(): void {
     const violations = this.everJoined.flatMap((client) => client.violations);
-    if (violations.length > 0) this.fail(`a client saw an inconsistent stream: ${violations[0]}`);
+    if (violations.length > 0) {
+      this.fail(`a client saw an inconsistent stream: ${violations[0]}`);
+    }
   }
 
   private assertClientsMatchDatabase(): void {
@@ -392,12 +444,11 @@ class Simulation {
               : { bidId: String(1000 + this.version), amountMinor: String(100 * this.version) },
         }
       : { kind: "missing" };
+    const wanted = JSON.stringify(expected);
     for (const client of this.clients) {
-      if (JSON.stringify(client.view) !== JSON.stringify(expected)) {
-        this.fail(
-          `${client.name} ended at ${JSON.stringify(client.view)}, ` +
-            `but the database is at ${JSON.stringify(expected)}`,
-        );
+      const actual = JSON.stringify(client.view);
+      if (actual !== wanted) {
+        this.fail(`${client.name} ended at ${actual}, but the database is at ${wanted}`);
       }
     }
   }

@@ -7,7 +7,10 @@ export async function waitFor(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${description}`);
+    const now = Date.now();
+    if (now > deadline) {
+      throw new Error(`Timed out waiting for ${description}`);
+    }
     await delay(25);
   }
 }

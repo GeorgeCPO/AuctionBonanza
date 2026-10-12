@@ -16,7 +16,9 @@ class FakeClient {
 
   async fetch(auctionIds: readonly string[]): Promise<Map<string, LiveStateLookup>> {
     this.requests.push([...auctionIds]);
-    if (this.holdRequests) await new Promise<void>((resolve) => this.releases.push(resolve));
+    if (this.holdRequests) {
+      await new Promise<void>((resolve) => this.releases.push(resolve));
+    }
     return new Map(
       auctionIds
         .filter((id) => !this.omitted.has(id))
@@ -28,7 +30,9 @@ class FakeClient {
   }
 
   releaseAll(): void {
-    for (const release of this.releases) release();
+    for (const release of this.releases) {
+      release();
+    }
     this.releases = [];
   }
 }

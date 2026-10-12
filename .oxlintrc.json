@@ -10,5 +10,13 @@
     "typescript/no-misused-promises": "error",
     "typescript/no-unused-vars": "error",
     "vitest/no-focused-tests": "error"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["services/realtime-gateway/**/*.ts", "tests/e2e/**/*.ts"],
+      "rules": {
+        "curly": "error"
+      }
+    }
+  ]
 }

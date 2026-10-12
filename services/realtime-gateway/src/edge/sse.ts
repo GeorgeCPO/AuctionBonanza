@@ -33,7 +33,9 @@ export class SseConnection {
     });
     response.flushHeaders();
     response.on("close", () => {
-      if (!this.closed) this.finish();
+      if (!this.closed) {
+        this.finish();
+      }
     });
     this.heartbeat = setInterval(() => this.send(HEARTBEAT_FRAME), options.heartbeatIntervalMs);
   }
@@ -43,7 +45,9 @@ export class SseConnection {
   }
 
   send(frame: string): void {
-    if (this.closed) return;
+    if (this.closed) {
+      return;
+    }
     this.response.write(frame);
     if (this.response.writableLength > this.options.maxBufferedBytes) {
       this.options.onOverflow();
@@ -54,7 +58,9 @@ export class SseConnection {
 
   // Ends the stream from the server side, for example on shutdown.
   close(): void {
-    if (this.closed) return;
+    if (this.closed) {
+      return;
+    }
     this.response.end();
     this.finish();
   }

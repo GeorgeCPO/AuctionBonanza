@@ -84,8 +84,11 @@ class FakeLiveStates implements LiveStateSource {
   async answer(index: number, lookup: LiveStateLookup | Error): Promise<void> {
     await waitFor(() => this.loads.length > index, `load ${index}`, 2_000);
     const { answer } = this.loads[index]!;
-    if (lookup instanceof Error) answer.reject(lookup);
-    else answer.resolve(lookup);
+    if (lookup instanceof Error) {
+      answer.reject(lookup);
+    } else {
+      answer.resolve(lookup);
+    }
   }
 }
 
@@ -99,7 +102,9 @@ class AnsweringLiveStates implements LiveStateSource {
   async load(): Promise<LiveStateLookup> {
     this.loads += 1;
     await new Promise((resolve) => setImmediate(resolve));
-    if (this.lookup instanceof Error) throw this.lookup;
+    if (this.lookup instanceof Error) {
+      throw this.lookup;
+    }
     return this.lookup;
   }
 }
@@ -245,7 +250,9 @@ describe("AuctionRegistry", () => {
     registry.watch("42", watcher);
     await waitFor(() => liveStates.loads === 1, "the first read");
 
-    for (const version of [2, 3, 4]) bus.publishBid("42", version);
+    for (const version of [2, 3, 4]) {
+      bus.publishBid("42", version);
+    }
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     expect(liveStates.loads).toBe(1);
@@ -273,7 +280,9 @@ describe("AuctionRegistry", () => {
     registry.watch("42", watcher);
     await waitFor(() => liveStates.loads.length === 1, "the first read");
 
-    for (const version of [2, 3, 4]) bus.publishBid("42", version);
+    for (const version of [2, 3, 4]) {
+      bus.publishBid("42", version);
+    }
     // The first read may predate the discarded events, so it is ignored.
     await liveStates.answer(0, found("42", 1));
     await liveStates.answer(1, found("42", 4));

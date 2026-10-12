@@ -48,8 +48,8 @@ export class WatchedAuction {
 
   // Returns true when this call removed the last client.
   removeWatcher(watcher: AuctionWatcher): boolean {
-    this.watchers.delete(watcher);
-    return this.watchers.size === 0;
+    const wasWatching = this.watchers.delete(watcher);
+    return wasWatching && this.watchers.size === 0;
   }
 
   // Sends one serialized frame to every client, which is serialized once per
@@ -57,7 +57,9 @@ export class WatchedAuction {
   sendToWatchers(frame: string): void {
     // A client whose connection overflows unwatches during send; deleting
     // from a Set while iterating it is well defined.
-    for (const watcher of this.watchers) watcher.send(frame);
+    for (const watcher of this.watchers) {
+      watcher.send(frame);
+    }
   }
 
   // Keeps the auction for a while after its last client left: clients
@@ -107,7 +109,9 @@ export class WatchedAuction {
       const subscription = open();
       this.subscription = subscription;
       subscription.catch(() => {
-        if (this.subscription === subscription) this.subscription = undefined;
+        if (this.subscription === subscription) {
+          this.subscription = undefined;
+        }
       });
     }
     return this.subscription;

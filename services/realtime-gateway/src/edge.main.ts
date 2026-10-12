@@ -51,7 +51,9 @@ if (import.meta.main) {
     await bus.connect();
     // A shutdown requested while connecting must not be followed by
     // accepting clients.
-    if (stopping !== undefined) return;
+    if (stopping !== undefined) {
+      return;
+    }
     const address = await server.listen(config.host, config.port);
     logger.info(
       {

@@ -61,8 +61,11 @@ export class SseTestClient {
       let event = "message";
       let data: string | undefined;
       for (const line of block.split("\n")) {
-        if (line.startsWith("event: ")) event = line.slice("event: ".length);
-        else if (line.startsWith("data: ")) data = line.slice("data: ".length);
+        if (line.startsWith("event: ")) {
+          event = line.slice("event: ".length);
+        } else if (line.startsWith("data: ")) {
+          data = line.slice("data: ".length);
+        }
       }
       if (data !== undefined) {
         this.messages.push({ event, data: JSON.parse(data) as Record<string, unknown> });

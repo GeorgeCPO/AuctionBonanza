@@ -43,7 +43,9 @@ describe.skipIf(valkeyNodes === undefined)("SSE edge", { timeout: 30_000 }, () =
   });
 
   afterEach(() => {
-    for (const client of clients) client.close();
+    for (const client of clients) {
+      client.close();
+    }
     clients = [];
     stub.beforeRead = async () => {};
     stub.afterRead = async () => {};
@@ -178,8 +180,11 @@ describe.skipIf(valkeyNodes === undefined)("SSE edge", { timeout: 30_000 }, () =
       const gate = createGate();
       const hold = (ids: readonly string[]) =>
         ids.includes(auctionId) ? gate.pass() : Promise.resolve();
-      if (commit === "before") stub.beforeRead = hold;
-      else stub.afterRead = hold;
+      if (commit === "before") {
+        stub.beforeRead = hold;
+      } else {
+        stub.afterRead = hold;
+      }
       const before = edge.registry.stats();
 
       const client = await connect(auctionId);
@@ -212,12 +217,16 @@ describe.skipIf(valkeyNodes === undefined)("SSE edge", { timeout: 30_000 }, () =
 
   it("shares one batched read per auction between clients and serves later clients from memory", async () => {
     const auctionIds = [randomAuctionId(), randomAuctionId(), randomAuctionId()];
-    for (const id of auctionIds) stub.states.set(id, liveState(id, 1));
+    for (const id of auctionIds) {
+      stub.states.set(id, liveState(id, 1));
+    }
     const requestsBefore = stub.requests.length;
 
     const [first, second] = await Promise.all([connect(...auctionIds), connect(...auctionIds)]);
     for (const client of [first!, second!]) {
-      for (const id of auctionIds) await client.waitForTimeline(id, ["snapshot@1"]);
+      for (const id of auctionIds) {
+        await client.waitForTimeline(id, ["snapshot@1"]);
+      }
     }
     const late = await connect(auctionIds[1]!);
     await late.waitForTimeline(auctionIds[1]!, ["snapshot@1"]);
@@ -322,13 +331,19 @@ describe.skipIf(valkeyNodes === undefined)(
       // Spread over the cluster, so the edge holds several subscriber
       // connections.
       const auctionIds = Array.from({ length: 12 }, () => randomAuctionId());
-      for (const id of auctionIds) stub.states.set(id, liveState(id, 1));
+      for (const id of auctionIds) {
+        stub.states.set(id, liveState(id, 1));
+      }
       client = await SseTestClient.open(`${edge.url}/v1/stream?auctions=${auctionIds.join(",")}`);
-      for (const id of auctionIds) await client.waitForTimeline(id, ["snapshot@1"]);
+      for (const id of auctionIds) {
+        await client.waitForTimeline(id, ["snapshot@1"]);
+      }
 
       // Changes the edge never hears of, as if published while it was
       // disconnected.
-      for (const id of auctionIds) stub.states.set(id, liveState(id, 2));
+      for (const id of auctionIds) {
+        stub.states.set(id, liveState(id, 2));
+      }
       const before = edge.registry.stats();
       const killed = await killSubscriberConnections(valkeyNodes!, edge.clientName);
       expect(killed).toBeGreaterThan(1);
