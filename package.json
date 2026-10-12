@@ -13,9 +13,13 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
-    "test": "pnpm --recursive --if-present run test",
+    "test": "pnpm run test:unit",
+    "test:unit": "pnpm --recursive --if-present run test:unit",
+    "test:integration": "pnpm --recursive --if-present run test:integration",
+    "test:e2e": "pnpm --filter @auction-bonanza/e2e-tests run test:e2e",
     "typecheck": "pnpm --recursive --if-present run typecheck",
-    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:unit && pnpm run build",
+    "check:all": "pnpm run check && pnpm run test:integration && pnpm run test:e2e"
   },
   "devDependencies": {
     "dbmate": "2.35.1",
