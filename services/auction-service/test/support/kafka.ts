@@ -4,6 +4,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseBidAcceptedV1 } from "@auction-bonanza/contracts";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 
+import { countMessages, fetchSettledOffsets } from "./topic-offsets.js";
+
 export interface ConsumedMessage {
   partition: number;
   offset: bigint;
@@ -48,13 +50,16 @@ export class KafkaTestTopics {
 
   // Reads every message currently in the topic. The expected count comes from
   // the partition high watermarks, so the result is exact: no waiting period
-  // is needed to be confident that no duplicate is still missing.
+  // is needed to be confident that no duplicate is still missing. The count
+  // is taken only from an answer in which every partition reports real
+  // offsets (see isSettled).
   async readAll(topic: string): Promise<ConsumedMessage[]> {
-    const offsets = await this.admin.fetchTopicOffsets(topic);
-    const total = offsets.reduce(
-      (sum, partition) => sum + Number(BigInt(partition.high) - BigInt(partition.low)),
-      0,
-    );
+    const offsets = await fetchSettledOffsets(async () => this.admin.fetchTopicOffsets(topic), {
+      topic,
+      timeoutMs: 10_000,
+      pollMs: 20,
+    });
+    const total = countMessages(offsets);
     if (total === 0) {
       return [];
     }
