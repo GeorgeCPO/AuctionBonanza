@@ -127,8 +127,5 @@ Finalization is implemented; the details and failure behavior are in
   led at the close. A closed auction with no `winning_bid_id` closed unsold.
 - A closed auction's outcome is immutable, and finalizing it again changes
   nothing and emits nothing.
-- A close that fails is recorded on the auction (attempt count, a retry time on
-  the database clock, the last error) and retried later with backoff, without
-  holding up other auctions. These columns are not aggregate state: writing
-  them does not advance `version`, emits no event, and the API does not expose
-  them.
+- A close that fails is retried later with backoff without holding up other
+  auctions; see [`FINALIZATION.md`](FINALIZATION.md#failed-closes).

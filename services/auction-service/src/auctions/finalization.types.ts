@@ -14,7 +14,7 @@ export type FinalizationOutcome =
       auctionId: string;
       attempt: number;
       retryDelayMs: number;
-      error: string;
+      error: Error;
     };
 
 export interface FinalizationRepositoryOptions {
@@ -24,7 +24,9 @@ export interface FinalizationRepositoryOptions {
 }
 
 export interface FinalizationRepository {
-  // Closes at most one due auction in its own transaction.
+  // Closes at most one due auction in its own transaction. An auction whose
+  // close fails is recorded as failed and reported as `close_failed`; only a
+  // failure to reach or write the database throws.
   finalizeNextDue(): Promise<FinalizationOutcome>;
 }
 

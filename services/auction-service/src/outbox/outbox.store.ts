@@ -1,11 +1,10 @@
 import type { DatabaseClient } from "../database.js";
+import { MAX_STORED_ERROR_LENGTH } from "../shared/errors.js";
 import type { OutboxEventInput } from "./outbox.store.types.js";
 
 // Outbox publication state. Every function runs on a client the caller has
 // already placed inside a transaction; the row locks taken by
 // claimPublishableEvents are held until that transaction ends.
-
-const MAX_PUBLISH_ERROR_LENGTH = 1_000;
 
 // Appends an event in the caller's transaction. The event must carry the
 // auction version that transaction just wrote: the
@@ -151,7 +150,7 @@ export async function recordPublicationFailures(
     [
       failures.map((failure) => failure.eventId),
       failures.map((failure) => String(failure.retryDelayMs)),
-      failures.map((failure) => failure.error.slice(0, MAX_PUBLISH_ERROR_LENGTH)),
+      failures.map((failure) => failure.error.slice(0, MAX_STORED_ERROR_LENGTH)),
     ],
   );
   if (result.rowCount !== failures.length) {

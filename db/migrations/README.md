@@ -165,15 +165,7 @@ available while a session family is relevant so replay can be detected.
 The PostgreSQL 18 Docker image uses the `postgres18_data` Compose volume mounted
 at `/var/lib/postgresql` for persistent storage.
 
-The finalization-failure migration is owned by `auction-service` and adds
-retry bookkeeping to `auctions`: `finalization_attempts`,
-`next_finalization_attempt_at` and `last_finalization_error`. They are written
-only when closing an auction fails, without advancing `version` and without an
-outbox event, so the version triggers do not fire. A CHECK forbids a scheduled
-retry on a closed or cancelled auction, and keeps the attempt count and last
-error as history. Roll out in this order: apply the migration, stop the old
-finalizers, start the new ones. An old finalizer does not clear
-`next_finalization_attempt_at` when it closes an auction, so the CHECK would
-reject its close of an auction a new finalizer had scheduled for retry. Stop
-the new finalizers before rolling the migration back. A future cancellation
-writer must also clear `next_finalization_attempt_at`.
+The finalization-failure migration adds three retry-bookkeeping columns to
+`auctions` (see [`FINALIZATION.md`](../../docs/FINALIZATION.md#failed-closes)).
+Apply it before starting a finalizer that records failures; older finalizers
+keep working against the new schema.

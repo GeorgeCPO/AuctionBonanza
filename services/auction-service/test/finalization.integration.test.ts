@@ -1,12 +1,12 @@
 import { parseAuctionClosedV1 } from "@auction-bonanza/contracts";
 import { Pool } from "pg";
 import { pino } from "pino";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PostgresBidRepository } from "../src/bids/bid.repository.js";
 import { PostgresFinalizationRepository } from "../src/auctions/finalization.repository.js";
 import { FinalizationWorker } from "../src/auctions/finalization.worker.js";
-import { wrapPool, type Database } from "../src/database.js";
+import { wrapPool, type Database, type QueryResult } from "../src/database.js";
 import { AuctionFixtures } from "./support/outbox-fixtures.js";
 import { createIsolatedDatabase, type IsolatedDatabase } from "./support/isolated-database.js";
 
@@ -14,9 +14,13 @@ const adminDatabaseUrl = process.env.TEST_DATABASE_URL;
 
 interface AuctionRow {
   version: string;
+  updatedAt: Date;
   closedAt: Date | null;
   winningBidId: string | null;
   leadingBidId: string | null;
+  attempts: number;
+  nextAttemptAt: Date | null;
+  lastError: string | null;
 }
 
 // The finalizer claims every due auction in its database, so these tests run
@@ -102,16 +106,43 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
 
   async function auctionRow(auctionId: string): Promise<AuctionRow> {
     const result = await pool.query<Record<string, unknown>>(
-      `SELECT version::text, closed_at, winning_bid_id::text, leading_bid_id::text
+      `SELECT version::text, updated_at, closed_at, winning_bid_id::text, leading_bid_id::text,
+              finalization_attempts, next_finalization_attempt_at, last_finalization_error
        FROM auctions WHERE id = $1`,
       [auctionId],
     );
     const row = result.rows[0]!;
     return {
       version: row.version as string,
+      updatedAt: row.updated_at as Date,
       closedAt: row.closed_at as Date | null,
       winningBidId: row.winning_bid_id as string | null,
       leadingBidId: row.leading_bid_id as string | null,
+      attempts: row.finalization_attempts as number,
+      nextAttemptAt: row.next_finalization_attempt_at as Date | null,
+      lastError: row.last_finalization_error as string | null,
+    };
+  }
+
+  // A database that behaves like `database` except that `intercept` may
+  // answer a query on a checked-out client itself (return undefined to let it
+  // through). `onRelease` sees how each client is handed back.
+  function interceptingDatabase(
+    intercept: (text: string) => Promise<QueryResult | undefined> | undefined,
+    onRelease?: (error?: Error) => void,
+  ): Database {
+    return {
+      query: async (text, values) => database.query(text, values),
+      connect: async () => {
+        const client = await database.connect();
+        return {
+          query: async (text, values) => (await intercept(text)) ?? client.query(text, values),
+          release: (error) => {
+            onRelease?.(error);
+            client.release(error);
+          },
+        };
+      },
     };
   }
 
@@ -345,15 +376,6 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
   });
 
   describe("a close that fails", () => {
-    interface BookkeepingRow {
-      version: string;
-      updatedAt: Date;
-      closedAt: Date | null;
-      attempts: number;
-      nextAttemptAt: Date | null;
-      lastError: string | null;
-    }
-
     async function poison(auctionId: string): Promise<void> {
       await pool.query("INSERT INTO test_poisoned_auctions (auction_id) VALUES ($1)", [auctionId]);
     }
@@ -362,30 +384,15 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
       await pool.query("DELETE FROM test_poisoned_auctions WHERE auction_id = $1", [auctionId]);
     }
 
-    async function makeRetriesDue(): Promise<void> {
-      await pool.query(
-        `UPDATE auctions
-         SET next_finalization_attempt_at = clock_timestamp() - interval '1 millisecond'
-         WHERE next_finalization_attempt_at IS NOT NULL`,
-      );
-    }
-
-    async function bookkeeping(auctionId: string): Promise<BookkeepingRow> {
-      const result = await pool.query<Record<string, unknown>>(
-        `SELECT version::text, updated_at, closed_at, finalization_attempts,
-                next_finalization_attempt_at, last_finalization_error
+    async function retryIsScheduledWithinAMinute(auctionId: string): Promise<boolean> {
+      const result = await pool.query<{ scheduled: boolean }>(
+        `SELECT next_finalization_attempt_at > clock_timestamp()
+                AND next_finalization_attempt_at < clock_timestamp() + interval '1 minute'
+                AS scheduled
          FROM auctions WHERE id = $1`,
         [auctionId],
       );
-      const row = result.rows[0]!;
-      return {
-        version: row.version as string,
-        updatedAt: row.updated_at as Date,
-        closedAt: row.closed_at as Date | null,
-        attempts: row.finalization_attempts as number,
-        nextAttemptAt: row.next_finalization_attempt_at as Date | null,
-        lastError: row.last_finalization_error as string | null,
-      };
+      return result.rows[0]!.scheduled;
     }
 
     // An expired auction with a bid, so the close has a winner to name.
@@ -418,28 +425,21 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
     it("records the failure although the close rolled back, and changes nothing else", async () => {
       const poisoned = await expiredAuction();
       await poison(poisoned);
-      const before = await bookkeeping(poisoned);
+      const before = await auctionRow(poisoned);
 
       await finalization.finalizeNextDue();
 
-      const after = await bookkeeping(poisoned);
+      const after = await auctionRow(poisoned);
       expect(after).toMatchObject({
         version: before.version,
         updatedAt: before.updatedAt,
         closedAt: null,
+        winningBidId: null,
         attempts: 1,
       });
       expect(after.lastError).toContain("poisoned auction");
-      const scheduled = await pool.query<{ in_future: boolean; within_a_minute: boolean }>(
-        `SELECT next_finalization_attempt_at > clock_timestamp() AS in_future,
-                next_finalization_attempt_at < clock_timestamp() + interval '1 minute'
-                  AS within_a_minute
-         FROM auctions WHERE id = $1`,
-        [poisoned],
-      );
-      expect(scheduled.rows[0]).toEqual({ in_future: true, within_a_minute: true });
+      expect(await retryIsScheduledWithinAMinute(poisoned)).toBe(true);
       expect(await closedEvents(poisoned)).toHaveLength(0);
-      expect((await auctionRow(poisoned)).winningBidId).toBeNull();
     });
 
     it("is retried only after its backoff, and closes once the cause is gone", async () => {
@@ -450,14 +450,13 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
 
       await expect(finalization.finalizeNextDue()).resolves.toEqual({ kind: "none_due" });
 
-      await makeRetriesDue();
+      await fixtures.makeFinalizationRetriesDue();
       await expect(finalization.finalizeNextDue()).resolves.toMatchObject({
         kind: "closed",
         auctionId: poisoned,
       });
-      const after = await bookkeeping(poisoned);
+      const after = await auctionRow(poisoned);
       expect(after.closedAt).toBeInstanceOf(Date);
-      expect(after.nextAttemptAt).toBeNull();
       expect(after.attempts).toBe(1);
       expect(after.lastError).toContain("poisoned auction");
       expect(await closedEvents(poisoned)).toHaveLength(1);
@@ -468,66 +467,77 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
       await poison(poisoned);
 
       await finalization.finalizeNextDue();
-      await makeRetriesDue();
+      await fixtures.makeFinalizationRetriesDue();
       const second = await finalization.finalizeNextDue();
 
       expect(second).toMatchObject({ kind: "close_failed", attempt: 2 });
-      expect((await bookkeeping(poisoned)).attempts).toBe(2);
+      expect((await auctionRow(poisoned)).attempts).toBe(2);
+    });
+
+    it("keeps the error text within the column width and free of NUL characters", async () => {
+      const auctionId = await expiredAuction();
+      const failing = repositoryFor(
+        interceptingDatabase((text) => {
+          if (text.includes("INSERT INTO outbox_events")) {
+            throw new Error(`${"x".repeat(2_000)}\u0000tail`);
+          }
+          return undefined;
+        }),
+      );
+
+      await expect(failing.finalizeNextDue()).resolves.toMatchObject({
+        kind: "close_failed",
+        auctionId,
+      });
+
+      const { lastError } = await auctionRow(auctionId);
+      expect(lastError).toHaveLength(1_000);
+      expect(lastError).not.toContain("\u0000");
     });
 
     it("records a missing outbox event as a failed close instead of failing the commit", async () => {
       const auctionId = await expiredAuction();
-      const before = await bookkeeping(auctionId);
-      // The event insert is swallowed, so the deferred "version has an
-      // event" check would fail at COMMIT. SET CONSTRAINTS ALL IMMEDIATE
-      // makes it fail inside the savepoint instead.
-      const skippingEvent = repositoryFor({
-        query: async (text, values) => database.query(text, values),
-        connect: async () => {
-          const client = await database.connect();
-          return {
-            query: async (text, values) => {
-              if (text.includes("INSERT INTO outbox_events")) {
-                return { rows: [], rowCount: 0 };
-              }
-              return client.query(text, values);
-            },
-            release: (error) => client.release(error),
-          };
-        },
-      });
+      const before = await auctionRow(auctionId);
+      // The event insert is swallowed, so the deferred "version has an event"
+      // check would fail at COMMIT. Making it immediate inside the savepoint
+      // lets the failure be recorded instead.
+      const skippingEvent = repositoryFor(
+        interceptingDatabase((text) =>
+          text.includes("INSERT INTO outbox_events")
+            ? Promise.resolve({ rows: [], rowCount: 0 })
+            : undefined,
+        ),
+      );
 
       const outcome = await skippingEvent.finalizeNextDue();
 
       expect(outcome).toMatchObject({ kind: "close_failed", auctionId, attempt: 1 });
-      expect(outcome.kind === "close_failed" && outcome.error).toContain("has no outbox event");
-      const after = await bookkeeping(auctionId);
-      expect(after).toMatchObject({ version: before.version, closedAt: null, attempts: 1 });
+      expect(outcome.kind === "close_failed" && outcome.error.message).toContain(
+        "has no outbox event",
+      );
+      expect(await auctionRow(auctionId)).toMatchObject({
+        version: before.version,
+        closedAt: null,
+        attempts: 1,
+      });
     });
 
     it("keeps the row locked while the failure is recorded", async () => {
       const poisoned = await expiredAuction();
       await poison(poisoned);
       let competingLock: unknown;
-      const observing = repositoryFor({
-        query: async (text, values) => database.query(text, values),
-        connect: async () => {
-          const client = await database.connect();
-          return {
-            query: async (text, values) => {
-              if (text.includes("last_finalization_error =")) {
-                // The close has been rolled back to the savepoint. If the
-                // claim's lock were gone, another session could take it now.
-                competingLock = await pool
-                  .query("SELECT id FROM auctions WHERE id = $1 FOR UPDATE NOWAIT", [poisoned])
-                  .catch((error: unknown) => error);
-              }
-              return client.query(text, values);
-            },
-            release: (error) => client.release(error),
-          };
-        },
-      });
+      const observing = repositoryFor(
+        interceptingDatabase(async (text) => {
+          if (text.includes("last_finalization_error =")) {
+            // The close has been rolled back to the savepoint. If the claim's
+            // lock were gone, another session could take it now.
+            competingLock = await pool
+              .query("SELECT id FROM auctions WHERE id = $1 FOR UPDATE NOWAIT", [poisoned])
+              .catch((error: unknown) => error);
+          }
+          return undefined;
+        }),
+      );
 
       await observing.finalizeNextDue();
 
@@ -536,29 +546,22 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
 
     it("rejects, and records nothing, when the failure cannot be recorded", async () => {
       const auctionId = await expiredAuction();
-      const before = await bookkeeping(auctionId);
+      const before = await auctionRow(auctionId);
       const released: unknown[] = [];
-      const brokenConnection = repositoryFor({
-        query: async (text, values) => database.query(text, values),
-        connect: async () => {
-          const client = await database.connect();
-          return {
-            query: async (text, values) => {
-              if (text.includes("INSERT INTO outbox_events")) {
-                throw new Error("connection lost before the event was written");
-              }
-              if (text.includes("ROLLBACK TO SAVEPOINT")) {
-                throw new Error("connection lost");
-              }
-              return client.query(text, values);
-            },
-            release: (error) => {
-              released.push(error);
-              client.release(error);
-            },
-          };
-        },
-      });
+      const brokenConnection = repositoryFor(
+        interceptingDatabase(
+          (text) => {
+            if (text.includes("INSERT INTO outbox_events")) {
+              throw new Error("connection lost before the event was written");
+            }
+            if (text.includes("ROLLBACK TO SAVEPOINT")) {
+              throw new Error("connection lost");
+            }
+            return undefined;
+          },
+          (error) => released.push(error),
+        ),
+      );
 
       await expect(brokenConnection.finalizeNextDue()).rejects.toThrow(
         /Recording the failed close of auction \d+ failed/,
@@ -566,32 +569,23 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
 
       expect(released).toHaveLength(1);
       expect(released[0]).toBeInstanceOf(Error);
-      expect(await bookkeeping(auctionId)).toEqual(before);
+      expect(await auctionRow(auctionId)).toEqual(before);
       // The auction is simply claimed again by the next call.
       await expect(finalization.finalizeNextDue()).resolves.toMatchObject({ kind: "closed" });
     });
 
-    describe("with the application clock set far in the past", () => {
-      afterEach(() => {
-        vi.useRealTimers();
-      });
-
-      it("schedules the retry on the database clock", async () => {
-        const poisoned = await expiredAuction();
-        await poison(poisoned);
-        vi.useFakeTimers({ toFake: ["Date"] });
-        vi.setSystemTime(new Date("2000-01-01T00:00:00Z"));
-
+    it("schedules the retry on the database clock", async () => {
+      const poisoned = await expiredAuction();
+      await poison(poisoned);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2000-01-01T00:00:00Z"));
+      try {
         await finalization.finalizeNextDue();
-
+      } finally {
         vi.useRealTimers();
-        const scheduled = await pool.query<{ in_future: boolean }>(
-          `SELECT next_finalization_attempt_at > clock_timestamp() AS in_future
-           FROM auctions WHERE id = $1`,
-          [poisoned],
-        );
-        expect(scheduled.rows[0]!.in_future).toBe(true);
-      });
+      }
+
+      expect(await retryIsScheduledWithinAMinute(poisoned)).toBe(true);
     });
 
     it("leaves every healthy auction closed exactly once when finalizers compete", async () => {
@@ -619,7 +613,7 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
         expect(events).toHaveLength(1);
         expect((await auctionRow(auctionId)).version).toBe(events[0]!.version);
       }
-      expect(await bookkeeping(poisoned)).toMatchObject({ closedAt: null, attempts: 1 });
+      expect(await auctionRow(poisoned)).toMatchObject({ closedAt: null, attempts: 1 });
       expect(await closedEvents(poisoned)).toHaveLength(0);
     });
 
@@ -641,6 +635,32 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
 
       expect(order).toEqual([first, poisoned, third, fourth]);
     });
+
+    it("claims auctions with the same deadline in numeric id order", async () => {
+      const ids: string[] = [];
+      for (let index = 0; index < 11; index += 1) {
+        ids.push(await fixtures.openAuction(ownerId));
+      }
+      await pool.query(
+        `UPDATE auctions
+         SET starts_at = TIMESTAMPTZ '2000-01-01 00:00:00+00',
+             ends_at = TIMESTAMPTZ '2000-01-01 01:00:00+00'
+         WHERE id = ANY($1::bigint[])`,
+        [ids],
+      );
+
+      const order: string[] = [];
+      for (;;) {
+        const outcome = await finalization.finalizeNextDue();
+        if (outcome.kind === "none_due") {
+          break;
+        }
+        order.push(outcome.auctionId);
+      }
+
+      // Text order would put id 10 and 11 before id 2.
+      expect(order).toEqual(ids);
+    });
   });
 
   describe("failure", () => {
@@ -648,33 +668,23 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
       const auctionId = await fixtures.openAuction(ownerId);
       await bid(auctionId, bidderId, "1000");
       await fixtures.expire(auctionId);
-      const failing = repositoryFor({
-        query: async (text, values) => database.query(text, values),
-        connect: async () => {
-          const client = await database.connect();
-          return {
-            query: async (text, values) => {
-              if (text.includes("INSERT INTO outbox_events")) {
-                throw new Error("event could not be written");
-              }
-              return client.query(text, values);
-            },
-            release: (error) => client.release(error),
-          };
-        },
-      });
+      const failing = repositoryFor(
+        interceptingDatabase((text) => {
+          if (text.includes("INSERT INTO outbox_events")) {
+            throw new Error("event could not be written");
+          }
+          return undefined;
+        }),
+      );
 
       await expect(failing.finalizeNextDue()).resolves.toMatchObject({
         kind: "close_failed",
         auctionId,
       });
 
-      const row = await auctionRow(auctionId);
-      expect(row.closedAt).toBeNull();
+      expect((await auctionRow(auctionId)).closedAt).toBeNull();
       expect(await closedEvents(auctionId)).toHaveLength(0);
-      await pool.query("UPDATE auctions SET next_finalization_attempt_at = NULL WHERE id = $1", [
-        auctionId,
-      ]);
+      await fixtures.makeFinalizationRetriesDue();
       await expect(finalization.finalizeNextDue()).resolves.toMatchObject({ kind: "closed" });
       expect(await closedEvents(auctionId)).toHaveLength(1);
     });
@@ -761,44 +771,6 @@ describe.skipIf(adminDatabaseUrl === undefined)("auction finalization with Postg
           [auctionId],
         ),
       ).rejects.toMatchObject({ constraint: "auctions_closed_outcome_immutable" });
-    });
-
-    it("rejects a closed auction that is scheduled for another finalization attempt", async () => {
-      const auctionId = await fixtures.openAuction(ownerId);
-      await bid(auctionId, bidderId, "1000");
-      await fixtures.expire(auctionId);
-      await finalization.finalizeNextDue();
-
-      await expect(
-        pool.query(
-          "UPDATE auctions SET next_finalization_attempt_at = clock_timestamp() WHERE id = $1",
-          [auctionId],
-        ),
-      ).rejects.toMatchObject({ constraint: "auctions_finalization_retry_terminal_check" });
-    });
-
-    it("rejects a negative attempt count", async () => {
-      const auctionId = await fixtures.openAuction(ownerId);
-
-      await expect(
-        pool.query("UPDATE auctions SET finalization_attempts = -1 WHERE id = $1", [auctionId]),
-      ).rejects.toMatchObject({ constraint: "auctions_finalization_attempts_check" });
-    });
-
-    it("accepts retry bookkeeping on an open auction without a version step or event", async () => {
-      const auctionId = await fixtures.openAuction(ownerId);
-      const before = await auctionRow(auctionId);
-
-      await pool.query(
-        `UPDATE auctions
-         SET finalization_attempts = 3,
-             next_finalization_attempt_at = clock_timestamp() + interval '1 hour',
-             last_finalization_error = 'boom'
-         WHERE id = $1`,
-        [auctionId],
-      );
-
-      expect((await auctionRow(auctionId)).version).toBe(before.version);
     });
   });
 });
