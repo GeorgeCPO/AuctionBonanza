@@ -42,7 +42,10 @@ pnpm auth:keys:local local-2026-09
 
 Use `pnpm format` to apply repository formatting, `pnpm format:check` to verify
 it without writing files, and `pnpm lint` for type-aware linting. `pnpm check`
-runs formatting, linting, type checks, tests, and production builds.
+runs formatting, linting, type checks, unit tests with their coverage
+thresholds, and production builds; it needs no infrastructure. `pnpm test` runs
+only the unit tests. Integration and end-to-end tests are separate commands,
+described in [`docs/TESTING.md`](docs/TESTING.md).
 
 The Compose stack contains PostgreSQL, a single-node Kafka, and a three-node
 Valkey cluster. PostgreSQL runs
@@ -99,35 +102,35 @@ those tests do cannot break a test that shares the first cluster. It has the
 same image and settings: three primaries (7101–7103) and one replica each
 (7104–7106), so tests can also fail a primary over.
 
-Integration tests are skipped unless their infrastructure is configured:
+Tests come in three tiers, each in its own folder with its own command (see
+[`docs/TESTING.md`](docs/TESTING.md) for the rules and for coverage):
+
+| Command                 | Runs                                                      | Needs the Compose stack |
+| ----------------------- | --------------------------------------------------------- | ----------------------- |
+| `pnpm test:unit`        | `test/unit/` in every workspace                           | No                      |
+| `pnpm test:integration` | `test/integration/`, against real PostgreSQL/Kafka/Valkey | Yes                     |
+| `pnpm test:e2e`         | `tests/e2e`, every service as a black box                 | Yes                     |
+
+Integration and end-to-end tests do not skip themselves: they refuse to start
+unless the `TEST_*` variables they need are set, and say which are missing.
+`pnpm test:integration:local` and `pnpm test:e2e:local` set them for you from
+`scripts/local-test.env`, which points at the Compose stack above:
 
 ```sh
-TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
-TEST_KAFKA_BROKERS=localhost:9092 \
-TEST_KAFKA_FAULT_INJECTION_UPSTREAM=localhost:19093 \
-pnpm --filter @auction-bonanza/auction-service test
-
-TEST_KAFKA_BROKERS=localhost:9092 \
-TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
-TEST_VALKEY_TOPOLOGY_NODES=localhost:7101,localhost:7102,localhost:7103 \
-pnpm --filter @auction-bonanza/realtime-gateway test
-
-TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
-TEST_KAFKA_BROKERS=localhost:9092 \
-TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
-pnpm --filter @auction-bonanza/e2e-tests test
+pnpm test:integration:local
+pnpm test:e2e:local
 ```
 
 `tests/e2e` is the end-to-end suite. It compiles the services from source and
-runs each as its own process (the auction-service API and outbox publisher,
-the relay, and the edge), then follows a bid from HTTP to an SSE client. It
-treats every service as a black box, so each service's own tests stay
+runs each as its own process (the auction-service API, outbox publisher and
+finalizer, the relay, and the edge), then follows a bid from HTTP to an SSE
+client. It treats every service as a black box, so each service's own tests stay
 self-contained.
 
-The outbox publisher tests and the end-to-end suite create and drop their own
-temporary databases from `db/schema.sql` (so the database user needs
-`CREATEDB`), and their own Kafka topics. `TEST_KAFKA_FAULT_INJECTION_UPSTREAM` enables only the broker outage
-test.
+The outbox publisher tests, the finalizer tests and the end-to-end suite create
+and drop their own temporary databases from `db/schema.sql` (so the database user
+needs `CREATEDB`), and their own Kafka topics. The Kafka outage test needs port
+`19092` free and reaches the broker through `TEST_KAFKA_FAULT_INJECTION_UPSTREAM`.
 
 ## Continuous integration
 
@@ -144,12 +147,15 @@ and on pushes to `master`:
    from the postgres container, and fails if the snapshot differs from the
    committed file. Only the `-- Dumped from/by` version header lines are
    ignored, because they depend on the committer's `pg_dump` build.
-4. Runs `pnpm check` with all `TEST_*` variables set, so every integration
-   test runs, including the Kafka outage test.
+4. Runs `pnpm check` (format, lint, typecheck, unit tests with coverage
+   thresholds, build), then `pnpm test:integration`, then `pnpm test:e2e`, as
+   separate steps so a failure names its tier. The `TEST_*` variables are set
+   for the whole job, so every integration test runs, including the Kafka
+   outage test.
 
-Integration tests still skip themselves locally when their variables are
-unset. When `CI=true`, the auction, identity, realtime gateway, and end-to-end Vitest configurations
-instead fail before running any test if a variable they need is missing.
+The integration and end-to-end Vitest configurations fail before running any
+test if a variable they need is missing, so neither tier can be skipped
+silently.
 
 To reproduce the CI run locally (port `19092` must be free):
 
@@ -160,14 +166,11 @@ docker compose up --detach --wait postgres kafka valkey-1 valkey-2 valkey-3 \
 docker compose up kafka-init valkey-init valkey-topology-init
 PATH="$PWD/scripts/compose-bin:$PATH" pnpm db:migrate
 git diff --exit-code --ignore-matching-lines='^-- Dumped (from|by) ' -- db/schema.sql
-CI=true \
-TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
-TEST_KAFKA_BROKERS=localhost:9092 \
-TEST_KAFKA_FAULT_INJECTION_UPSTREAM=localhost:19093 \
-TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
-TEST_VALKEY_TOPOLOGY_NODES=localhost:7101,localhost:7102,localhost:7103 \
-pnpm check
+pnpm check:all:local
 ```
+
+`check:all:local` runs `check`, `test:integration` and `test:e2e` with `CI=true`
+and the endpoints from `scripts/local-test.env`.
 
 `scripts/compose-bin/pg_dump` runs `pg_dump` inside the postgres container, so
 it also works locally without PostgreSQL client tools. CI starts from empty

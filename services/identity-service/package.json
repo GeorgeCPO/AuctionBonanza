@@ -4,10 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @auction-bonanza/http-routing build && pnpm --filter @auction-bonanza/access-auth build && tsc -p tsconfig.build.json",
+    "build:deps": "pnpm --filter @auction-bonanza/access-auth build",
+    "build": "pnpm --filter @auction-bonanza/http-routing build && pnpm run build:deps && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "start:local": "node --env-file-if-exists=.env dist/index.js",
-    "test": "pnpm --filter @auction-bonanza/access-auth build && vitest run",
+    "test:unit": "pnpm run build:deps && vitest run -c vitest.unit.config.ts",
+    "test:unit:coverage": "pnpm run build:deps && vitest run -c vitest.unit.config.ts --coverage",
+    "test:unit:watch": "pnpm run build:deps && vitest -c vitest.unit.config.ts",
+    "test:integration": "pnpm run build:deps && vitest run -c vitest.integration.config.ts",
+    "test:integration:coverage": "pnpm run build:deps && vitest run -c vitest.integration.config.ts --coverage",
+    "test:integration:local": "node ../../scripts/with-local-test-env.mjs pnpm run test:integration",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -21,6 +27,7 @@
   "devDependencies": {
     "@types/node": "24.13.3",
     "@types/pg": "8.15.5",
+    "@vitest/coverage-v8": "4.1.11",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   },

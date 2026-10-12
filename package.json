@@ -13,9 +13,19 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
-    "test": "pnpm --recursive --if-present run test",
+    "test": "pnpm run test:unit",
+    "test:unit": "pnpm --recursive --if-present run test:unit",
+    "test:unit:coverage": "pnpm --recursive --if-present run test:unit:coverage",
+    "test:integration": "pnpm --recursive --if-present run test:integration",
+    "test:integration:coverage": "pnpm --recursive --if-present run test:integration:coverage",
+    "test:integration:local": "node scripts/with-local-test-env.mjs pnpm run test:integration",
+    "test:e2e": "pnpm --filter @auction-bonanza/e2e-tests run test:e2e",
+    "test:e2e:local": "node scripts/with-local-test-env.mjs pnpm run test:e2e",
+    "test:sim:replay": "pnpm --filter @auction-bonanza/realtime-gateway run test:sim:replay",
     "typecheck": "pnpm --recursive --if-present run typecheck",
-    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:unit:coverage && pnpm run build",
+    "check:all": "pnpm run check && pnpm run test:integration && pnpm run test:e2e",
+    "check:all:local": "CI=true node scripts/with-local-test-env.mjs pnpm run check:all"
   },
   "devDependencies": {
     "dbmate": "2.35.1",

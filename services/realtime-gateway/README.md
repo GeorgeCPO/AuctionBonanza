@@ -54,8 +54,11 @@ path through the real one is covered by the root end-to-end suite,
 `tests/e2e`.
 
 ```sh
-TEST_KAFKA_BROKERS=localhost:9092 \
-TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
-TEST_VALKEY_TOPOLOGY_NODES=localhost:7101,localhost:7102,localhost:7103 \
-pnpm --filter @auction-bonanza/realtime-gateway test
+pnpm --filter @auction-bonanza/realtime-gateway test:unit
+pnpm --filter @auction-bonanza/realtime-gateway test:integration:local
 ```
+
+`test:integration` fails at startup if `TEST_KAFKA_BROKERS`, `TEST_VALKEY_NODES` or
+`TEST_VALKEY_TOPOLOGY_NODES` is unset; `:local` sets them from `scripts/local-test.env`. See
+[`docs/TESTING.md`](../../docs/TESTING.md). A failed registry simulation prints its seed;
+`pnpm test:sim:replay <seed>` replays it.

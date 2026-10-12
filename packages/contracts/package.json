@@ -11,13 +11,16 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run",
+    "test:unit": "vitest run -c vitest.unit.config.ts",
+    "test:unit:coverage": "vitest run -c vitest.unit.config.ts --coverage",
+    "test:unit:watch": "vitest -c vitest.unit.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@sinclair/typebox": "0.34.52"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "4.1.11",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   },

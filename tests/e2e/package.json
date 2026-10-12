@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "pnpm --filter @auction-bonanza/contracts --filter @auction-bonanza/http-routing --filter @auction-bonanza/access-auth build && vitest run",
+    "test:e2e": "pnpm --filter @auction-bonanza/contracts --filter @auction-bonanza/http-routing --filter @auction-bonanza/access-auth build && vitest run",
+    "test:e2e:local": "node ../../scripts/with-local-test-env.mjs pnpm run test:e2e",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

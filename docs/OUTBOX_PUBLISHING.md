@@ -215,7 +215,7 @@ update and the Kafka write atomic either, because they are two separate systems.
 ## Tests
 
 The publisher's integration tests run against real PostgreSQL and Kafka, in
-`services/auction-service/test/`: `outbox-publisher-ordering.integration.test.ts`
+`services/auction-service/test/integration/`: `outbox-publisher-ordering.integration.test.ts`
 covers claiming and per-auction order, and
 `outbox-publisher-failures.integration.test.ts` covers failures, crashes, and
 shutdown. Both share `test/support/outbox-publisher-harness.ts`. Each test
