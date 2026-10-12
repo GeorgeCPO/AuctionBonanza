@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { ServerResponse } from "node:http";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HEARTBEAT_FRAME, SseConnection, sseEvent } from "../../src/edge/sse.js";
 
@@ -47,6 +47,15 @@ function open(response: StalledResponse, maxBufferedBytes = 1_024) {
 }
 
 describe("SseConnection", () => {
+  // Fake timers keep the heartbeat deterministic: with real ones, a loaded
+  // machine could delay the interval and the test would count too few frames.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("formats events as single-line SSE frames", () => {
     expect(sseEvent("snapshot", { auctionId: "42", note: "two\nlines" })).toBe(
       'event: snapshot\ndata: {"auctionId":"42","note":"two\\nlines"}\n\n',
@@ -73,13 +82,14 @@ describe("SseConnection", () => {
     const response = new StalledResponse();
     const { events } = open(response, 1_000_000);
 
-    await new Promise((resolve) => setTimeout(resolve, 70));
+    // The interval is 20 ms, so it fires at 20, 40 and 60 ms.
+    await vi.advanceTimersByTimeAsync(70);
     response.emit("close");
     const heartbeats = response.written.length;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.advanceTimersByTimeAsync(50);
 
     expect(response.status).toBe(200);
-    expect(heartbeats).toBeGreaterThanOrEqual(2);
+    expect(heartbeats).toBe(3);
     expect(new Set(response.written)).toEqual(new Set([HEARTBEAT_FRAME]));
     expect(response.written).toHaveLength(heartbeats);
     expect(events).toEqual(["close"]);
