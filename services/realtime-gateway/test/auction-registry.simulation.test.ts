@@ -193,6 +193,7 @@ class Simulation {
     this.registry = new AuctionRegistry({
       bus: this.bus,
       liveStates: this.liveStates,
+      maxWatchedAuctions: 100,
       lingerMs: 150,
       maxBufferedEvents: this.rng.between(3, 8),
       retryBackoff: { baseDelayMs: 10, maxDelayMs: 40 },

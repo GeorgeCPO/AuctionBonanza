@@ -29,6 +29,7 @@ if (import.meta.main) {
       batchDelayMs: config.liveStateBatchDelayMs,
       maxConcurrentRequests: config.liveStateConcurrency,
     }),
+    maxWatchedAuctions: config.maxWatchedAuctions,
     lingerMs: config.lingerMs,
     maxBufferedEvents: config.maxBufferedEventsPerAuction,
     retryBackoff: { baseDelayMs: config.retryBaseDelayMs, maxDelayMs: config.retryMaxDelayMs },
@@ -37,6 +38,7 @@ if (import.meta.main) {
   const server = new EdgeServer({
     registry,
     maxAuctionsPerStream: config.maxAuctionsPerStream,
+    maxConnections: config.maxConnections,
     heartbeatIntervalMs: config.heartbeatIntervalMs,
     maxBufferedBytesPerConnection: config.maxBufferedBytesPerConnection,
     logger,

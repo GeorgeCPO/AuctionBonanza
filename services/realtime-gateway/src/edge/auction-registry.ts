@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 
-import { parseAuctionEventEnvelope } from "../bus/bus.js";
+import { auctionIdOfChannel, parseAuctionEventEnvelope } from "../bus/bus.js";
 import type { BusAuctionEvent } from "../bus/bus.types.js";
 import { backoffDelayMs } from "../shared/backoff.js";
 import type {
@@ -37,6 +37,8 @@ export class AuctionRegistry {
     resyncs: { gap: 0, "bus-interrupted": 0, "subscription-lost": 0, "buffer-overflow": 0 },
     malformedMessages: 0,
   };
+  // Retries of unsubscribes that failed, until the bus accepts them.
+  private readonly unsubscribeTimers = new Set<NodeJS.Timeout>();
   private closed = false;
 
   constructor(private readonly options: AuctionRegistryOptions) {
@@ -62,6 +64,13 @@ export class AuctionRegistry {
     if (entry.sync.known !== undefined) {
       watcher.send(this.snapshotFrame(entry));
     }
+  }
+
+  // True when watching all of these auctions would stay within the limit:
+  // those already watched cost nothing more.
+  hasRoomFor(auctionIds: readonly string[]): boolean {
+    const newAuctions = auctionIds.filter((auctionId) => !this.entries.has(auctionId));
+    return this.entries.size + newAuctions.length <= this.options.maxWatchedAuctions;
   }
 
   unwatch(auctionId: string, watcher: AuctionWatcher): void {
@@ -99,6 +108,10 @@ export class AuctionRegistry {
       entry.discard();
     }
     this.entries.clear();
+    for (const timer of this.unsubscribeTimers) {
+      clearTimeout(timer);
+    }
+    this.unsubscribeTimers.clear();
   }
 
   private resyncAll(reason: ResyncReason): void {
@@ -114,7 +127,11 @@ export class AuctionRegistry {
   // The bus dropped one channel's listener, so the auction must subscribe
   // again before anything it shows can be trusted.
   private resubscribe(channel: string): void {
-    const entry = [...this.entries.values()].find((candidate) => candidate.channel === channel);
+    const auctionId = auctionIdOfChannel(channel);
+    if (auctionId === undefined) {
+      return;
+    }
+    const entry = this.entries.get(auctionId);
     if (entry === undefined) {
       return;
     }
@@ -166,9 +183,16 @@ export class AuctionRegistry {
   }
 
   private startSync(entry: WatchedAuction, afterBackoff: boolean): void {
-    const attempt = entry.beginAttempt();
+    // A retry that is already scheduled keeps its deadline and runs the new
+    // attempt. Replacing it would push the read back every time, and an
+    // auction that keeps overflowing its buffer would never be read.
+    const keepPendingRetry = afterBackoff && entry.hasPendingRetry;
+    const attempt = entry.beginAttempt(keepPendingRetry);
+    if (keepPendingRetry) {
+      return;
+    }
     if (afterBackoff) {
-      this.retryLater(entry, attempt, "auction did not settle; resyncing after backoff");
+      this.retryLater(entry, "auction did not settle; resyncing after backoff");
     } else {
       void this.sync(entry, attempt);
     }
@@ -195,25 +219,20 @@ export class AuctionRegistry {
       if (entry.isStale(attempt)) {
         return;
       }
-      this.retryLater(entry, attempt, "auction sync failed; retrying", error);
+      this.retryLater(entry, "auction sync failed; retrying", error);
     }
   }
 
   // Consecutive syncs that do not end live back off; the count resets once
   // the auction is live again.
-  private retryLater(
-    entry: WatchedAuction,
-    attempt: number,
-    message: string,
-    error?: unknown,
-  ): void {
+  private retryLater(entry: WatchedAuction, message: string, error?: unknown): void {
     const backoffAttempt = entry.nextBackoffAttempt();
     const retryDelayMs = backoffDelayMs(this.options.retryBackoff, backoffAttempt);
     this.logger.warn(
       { err: error, auctionId: entry.auctionId, attempt: backoffAttempt, retryDelayMs },
       message,
     );
-    entry.scheduleRetry(retryDelayMs, () => void this.sync(entry, attempt));
+    entry.scheduleRetry(retryDelayMs, () => void this.sync(entry, entry.currentAttempt));
   }
 
   private receive(entry: WatchedAuction, message: string): void {
@@ -268,8 +287,31 @@ export class AuctionRegistry {
     entry.discard();
     // The bus orders this after any pending subscribe of the channel, and a
     // later subscribe of the same channel after this.
-    this.options.bus.unsubscribe(entry.channel).catch((error: unknown) => {
-      this.logger.warn({ err: error, auctionId: entry.auctionId }, "unsubscribe failed");
+    this.unsubscribeUntilDone(entry.auctionId, entry.channel, 1);
+  }
+
+  // node-redis drops a channel's listener only when the unsubscribe succeeds,
+  // so a failed one leaves the channel subscribed and receiving. It is tried
+  // again with backoff, unless the auction is watched again (its own
+  // subscription then replaces the old one) or the registry is closed.
+  private unsubscribeUntilDone(auctionId: string, channel: string, attempt: number): void {
+    this.options.bus.unsubscribe(channel).catch((error: unknown) => {
+      if (this.closed || this.entries.has(auctionId)) {
+        return;
+      }
+      const retryDelayMs = backoffDelayMs(this.options.retryBackoff, attempt);
+      this.logger.warn(
+        { err: error, auctionId, attempt, retryDelayMs },
+        "unsubscribe failed; retrying",
+      );
+      const timer = setTimeout(() => {
+        this.unsubscribeTimers.delete(timer);
+        if (this.entries.has(auctionId)) {
+          return;
+        }
+        this.unsubscribeUntilDone(auctionId, channel, attempt + 1);
+      }, retryDelayMs);
+      this.unsubscribeTimers.add(timer);
     });
   }
 }

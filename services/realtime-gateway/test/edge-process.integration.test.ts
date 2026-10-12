@@ -7,12 +7,8 @@ import {
   SseTestClient,
 } from "./support/edge-harness.js";
 import { waitFor } from "./support/relay-harness.js";
-import {
-  compileService,
-  gatewayRoot,
-  startServiceProcess,
-  type CompiledService,
-} from "./support/service-process.js";
+import { compileService, gatewayRoot, startServiceProcess } from "./support/service-process.js";
+import type { CompiledService } from "./support/service-process.types.js";
 
 const valkeyNodes = process.env.TEST_VALKEY_NODES;
 

@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
@@ -6,17 +6,11 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { waitFor } from "./wait-for.js";
+import type { CompiledService, ServiceProcess } from "./services.types.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../../..");
 export const auctionServiceRoot = resolve(repositoryRoot, "services/auction-service");
 export const gatewayRoot = resolve(repositoryRoot, "services/realtime-gateway");
-
-export interface CompiledService {
-  root: string;
-  // Absolute path of a compiled entry point, e.g. entry("edge.main.js").
-  entry(file: string): string;
-  remove(): Promise<void>;
-}
 
 // Compiles a service with its own compiler into a throwaway directory under
 // its node_modules, so dist/ is never overwritten and Node resolves the
@@ -49,19 +43,6 @@ export async function freePort(): Promise<number> {
   const { port } = server.address() as AddressInfo;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
-}
-
-export interface ServiceProcess {
-  process: ChildProcess;
-  stdout(): string;
-  stderr(): string;
-  // Parsed JSON log lines from stdout.
-  logs(): Record<string, unknown>[];
-  waitForLog(message: string, timeoutMs?: number): Promise<Record<string, unknown>>;
-  // Resolves with the exit code and signal once the process exits.
-  exited: Promise<[number | null, string | null]>;
-  // Sends SIGTERM and resolves with the exit code and signal.
-  stop(): Promise<[number | null, string | null]>;
 }
 
 export function startServiceProcess(

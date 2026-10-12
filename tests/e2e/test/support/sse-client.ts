@@ -1,11 +1,7 @@
 import { get, type ClientRequest, type IncomingMessage } from "node:http";
 
 import { waitFor } from "./wait-for.js";
-
-export interface SseMessage {
-  event: string;
-  data: Record<string, unknown>;
-}
+import type { SseMessage } from "./sse-client.types.js";
 
 // Reads an SSE response the way a browser's EventSource would.
 export class SseTestClient {

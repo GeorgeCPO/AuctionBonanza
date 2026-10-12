@@ -14,6 +14,10 @@ export interface AuctionWatcher {
 export interface AuctionRegistryOptions {
   bus: BusSubscriber;
   liveStates: LiveStateSource;
+  // Auctions watched at once on this edge. Each costs a subscription, a read,
+  // and memory, so the public endpoint cannot be allowed to create them
+  // without bound.
+  maxWatchedAuctions: number;
   // How long an auction stays subscribed after its last watcher left.
   lingerMs: number;
   // Events buffered per auction while it syncs. Beyond this the buffer is

@@ -54,6 +54,9 @@ export class LiveStateClient implements LiveStateFetcher {
       signal: AbortSignal.timeout(this.options.timeoutMs),
     });
     if (!response.ok) {
+      // An unread body keeps its connection checked out until garbage
+      // collection, which starves the retries that follow an incident.
+      await response.body?.cancel();
       throw new Error(`live-state request failed with HTTP ${response.status}`);
     }
     const body: unknown = await response.json();

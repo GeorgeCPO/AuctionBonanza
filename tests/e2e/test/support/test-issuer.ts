@@ -2,15 +2,7 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-
-export interface TestIssuer {
-  issuer: string;
-  audience: string;
-  jwksUrl: string;
-  // A signed access token for the user, as identity-service would issue it.
-  accessToken(userId: string): string;
-  stop(): Promise<void>;
-}
+import type { TestIssuer } from "./test-issuer.types.js";
 
 // Stands in for identity-service: serves a JWKS with one ES256 key and signs
 // access tokens with the claims auction-service verifies.
