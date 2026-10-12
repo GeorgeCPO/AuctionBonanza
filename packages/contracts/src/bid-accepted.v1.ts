@@ -44,7 +44,9 @@ function isValidOccurredAt(value: string): boolean {
   const minute = Number(value.slice(14, 16));
   const second = Number(value.slice(17, 19));
 
-  if (hour > 23 || minute > 59 || second > 59) return false;
+  if (hour > 23 || minute > 59 || second > 59) {
+    return false;
+  }
 
   const daysInMonth =
     month === 2

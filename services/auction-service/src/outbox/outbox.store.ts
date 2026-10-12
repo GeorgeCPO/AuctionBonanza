@@ -86,7 +86,9 @@ export async function markEventsPublished(
   client: DatabaseClient,
   eventIds: readonly string[],
 ): Promise<void> {
-  if (eventIds.length === 0) return;
+  if (eventIds.length === 0) {
+    return;
+  }
 
   const result = await client.query(
     `UPDATE outbox_events
@@ -108,7 +110,9 @@ export async function recordPublicationFailures(
   client: DatabaseClient,
   failures: readonly PublicationFailure[],
 ): Promise<void> {
-  if (failures.length === 0) return;
+  if (failures.length === 0) {
+    return;
+  }
 
   const result = await client.query(
     `UPDATE outbox_events AS event

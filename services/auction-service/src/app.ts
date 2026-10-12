@@ -4,7 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastif
 import type { AuctionApiDependencies } from "./api/dependencies.js";
 import { createApi } from "./api/index.js";
 
-export const auctionLoggerOptions: NonNullable<FastifyServerOptions["logger"]> = {
+const auctionLoggerOptions: NonNullable<FastifyServerOptions["logger"]> = {
   redact: {
     paths: ["req.headers.authorization", "request.headers.authorization"],
     censor: "[REDACTED]",

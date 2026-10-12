@@ -50,7 +50,9 @@ describe.skipIf(adminDatabaseUrl === undefined || kafkaBrokers === undefined)(
       await topics?.disconnect();
       await pool?.end();
       await isolatedDatabase?.drop();
-      if (buildDirectory !== undefined) await rm(buildDirectory, { recursive: true, force: true });
+      if (buildDirectory !== undefined) {
+        await rm(buildDirectory, { recursive: true, force: true });
+      }
     });
 
     it("refuses to start with invalid configuration", async () => {
@@ -94,7 +96,9 @@ describe.skipIf(adminDatabaseUrl === undefined || kafkaBrokers === undefined)(
 
       const deadline = Date.now() + 30_000;
       while ((await publishedCount(eventIds)) < eventIds.length) {
-        if (Date.now() > deadline) throw new Error(`Worker did not publish:\n${worker.stdout()}`);
+        if (Date.now() > deadline) {
+          throw new Error(`Worker did not publish:\n${worker.stdout()}`);
+        }
         await delay(50);
       }
       worker.process.kill("SIGTERM");
