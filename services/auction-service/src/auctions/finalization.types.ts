@@ -3,10 +3,25 @@ import type { Logger } from "pino";
 import type { RetryBackoffPolicy } from "../shared/backoff.js";
 
 // What one finalization call did, reported as data for the caller to log or
-// count. `winningBidId` is null when the auction closed unsold.
+// count. `winningBidId` is null when the auction closed unsold. `close_failed`
+// means the auction could not be closed: the failure is already recorded and
+// the auction will not be claimed again before `retryDelayMs` has passed.
 export type FinalizationOutcome =
   | { kind: "none_due" }
-  | { kind: "closed"; auctionId: string; auctionVersion: string; winningBidId: string | null };
+  | { kind: "closed"; auctionId: string; auctionVersion: string; winningBidId: string | null }
+  | {
+      kind: "close_failed";
+      auctionId: string;
+      attempt: number;
+      retryDelayMs: number;
+      error: string;
+    };
+
+export interface FinalizationRepositoryOptions {
+  // Schedules the next attempt at an auction whose close failed.
+  retryBackoff: RetryBackoffPolicy;
+  random?: () => number;
+}
 
 export interface FinalizationRepository {
   // Closes at most one due auction in its own transaction.

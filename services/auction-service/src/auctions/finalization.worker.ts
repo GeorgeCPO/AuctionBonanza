@@ -6,6 +6,7 @@ import type { FinalizationWorkerOptions } from "./finalization.types.js";
 // them, and so may log-based alerts.
 const LOG_MESSAGES = {
   closed: "auction closed",
+  closeFailed: "auction close failed; it will be retried and does not block other auctions",
   cycleFailed: "auction finalization failed",
 } as const;
 
@@ -23,6 +24,18 @@ export class FinalizationWorker {
       const outcome = await this.options.repository.finalizeNextDue();
       if (outcome.kind === "none_due") {
         return closed;
+      }
+      if (outcome.kind === "close_failed") {
+        this.options.logger.error(
+          {
+            auctionId: outcome.auctionId,
+            attempt: outcome.attempt,
+            retryDelayMs: outcome.retryDelayMs,
+            err: outcome.error,
+          },
+          LOG_MESSAGES.closeFailed,
+        );
+        continue;
       }
       closed += 1;
       this.options.logger.info(
