@@ -27,7 +27,7 @@ import { bidAcceptedEvent, liveState } from "../support/edge-harness.js";
 // connection is down, or when a subscription is dropped. Anything else the
 // registry must handle (duplicates, reordering, late copies, slow reads).
 //
-// Runs are seeded. To replay one: SIM_SEED=123 npx vitest run <this file>.
+// Runs are seeded. To replay one: pnpm test:sim:replay 123.
 
 const AUCTION = "42";
 const RUNS = 250;
@@ -460,7 +460,7 @@ class Simulation {
   private fail(reason: string): never {
     const recent = this.trace.slice(-45).join("\n  ");
     throw new Error(
-      `${reason}\nseed ${this.seed} (replay: SIM_SEED=${this.seed} npx vitest run test/auction-registry.simulation.test.ts)\nlast steps:\n  ${recent}`,
+      `${reason}\nseed ${this.seed} (replay: pnpm test:sim:replay ${this.seed})\nlast steps:\n  ${recent}`,
     );
   }
 

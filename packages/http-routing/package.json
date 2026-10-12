@@ -13,6 +13,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test:unit": "vitest run -c vitest.unit.config.ts",
     "test:unit:coverage": "vitest run -c vitest.unit.config.ts --coverage",
+    "test:unit:watch": "vitest -c vitest.unit.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
