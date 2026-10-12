@@ -1,10 +1,14 @@
-import { setTimeout as delay } from "node:timers/promises";
-
-import { BID_ACCEPTED_V1_EVENT_TYPE, parseBidAcceptedV1 } from "@auction-bonanza/contracts";
+import {
+  AUCTION_CLOSED_V1_EVENT_TYPE,
+  BID_ACCEPTED_V1_EVENT_TYPE,
+  parseAuctionClosedV1,
+  parseBidAcceptedV1,
+} from "@auction-bonanza/contracts";
 import type { Logger } from "pino";
 
-import type { Database, DatabaseClient } from "../database.js";
+import { rollbackQuietly, toError, type Database } from "../database.js";
 import { backoffDelayMs, type RetryBackoffPolicy } from "../shared/backoff.js";
+import { abortableSleep } from "../shared/sleep.js";
 import { PUBLISH_TIMEOUT_GRACE_MS } from "./outbox.config.js";
 import {
   claimPublishableEvents,
@@ -35,6 +39,7 @@ export const OUTBOX_LOG_MESSAGES = {
 // entry cannot be published.
 const payloadValidators = new Map<string, (payload: unknown) => unknown>([
   [BID_ACCEPTED_V1_EVENT_TYPE, parseBidAcceptedV1],
+  [AUCTION_CLOSED_V1_EVENT_TYPE, parseAuctionClosedV1],
 ]);
 
 export interface OutboxPublisherOptions {
@@ -118,7 +123,7 @@ export class OutboxPublisher {
       return { claimed: events.length, published: published.length, failed: failures.length };
     } catch (error) {
       cycleError = error;
-      await rollback(client);
+      await rollbackQuietly(client);
       this.warnAboutUncommittedAcknowledgements(error, acknowledged, commitSent);
       throw error;
     } finally {
@@ -152,7 +157,7 @@ export class OutboxPublisher {
         );
       }
 
-      if (pauseMs > 0) await sleep(pauseMs, signal);
+      if (pauseMs > 0) await abortableSleep(pauseMs, signal);
     }
   }
 
@@ -284,22 +289,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
-async function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  try {
-    await delay(ms, undefined, { signal });
-  } catch (error) {
-    if (!signal.aborted) throw error;
-  }
-}
-
-async function rollback(client: DatabaseClient): Promise<void> {
-  try {
-    await client.query("ROLLBACK");
-  } catch {
-    // Preserve the original error. The client is destroyed on release.
-  }
-}
-
 function describeError(error: unknown): string {
   if (error instanceof Error) {
     const code =
@@ -309,8 +298,4 @@ function describeError(error: unknown): string {
     return `${error.name}${code}: ${error.message}`;
   }
   return String(error);
-}
-
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
 }

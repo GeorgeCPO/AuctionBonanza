@@ -218,6 +218,17 @@ pnpm --filter @auction-bonanza/auction-service start:outbox-publisher:local
 Its delivery and ordering guarantees are described in
 [`docs/OUTBOX_PUBLISHING.md`](docs/OUTBOX_PUBLISHING.md).
 
+Auctions whose deadline has passed are closed by the finalizer, a third
+`auction-service` process. It records the winning bid (or an unsold result) and
+emits `AuctionClosed.v1` through the outbox, described in
+[`docs/FINALIZATION.md`](docs/FINALIZATION.md):
+
+```sh
+cp services/auction-service/.env.finalizer.example services/auction-service/.env.finalizer
+pnpm --filter @auction-bonanza/auction-service build
+pnpm --filter @auction-bonanza/auction-service start:finalizer:local
+```
+
 The realtime gateway's relay forwards those events from Kafka to the Valkey
 cluster, one sharded channel per auction:
 

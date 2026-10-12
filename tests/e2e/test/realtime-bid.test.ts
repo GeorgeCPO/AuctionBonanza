@@ -30,6 +30,8 @@ const valkeyNodes = process.env.TEST_VALKEY_NODES;
 //   POST /bids -> auction-service API -> outbox -> outbox publisher -> Kafka
 //     -> relay -> Valkey -> edge -> SSE client
 //
+// and of the close that follows it, from the finalizer to the same client.
+//
 // identity-service is the one service stood in for: a test issuer signs the
 // access tokens auction-service verifies.
 describe.skipIf(
@@ -75,6 +77,10 @@ describe.skipIf(
       KAFKA_BROKERS: kafkaBrokers!,
       AUCTION_EVENTS_TOPIC: topic.name,
       OUTBOX_POLL_INTERVAL_MS: "100",
+    });
+    start(auctionService, "finalizer.main.js", {
+      DATABASE_URL: database.url,
+      FINALIZER_POLL_INTERVAL_MS: "100",
     });
     const relay = start(gateway, "relay.main.js", {
       KAFKA_BROKERS: kafkaBrokers!,
@@ -134,9 +140,7 @@ describe.skipIf(
     });
   }
 
-  it("streams a bid accepted over HTTP to an SSE client", async () => {
-    const ownerId = await insertUser();
-    const bidderId = await insertUser();
+  async function createAuction(ownerId: string): Promise<string> {
     const created = await post("/v1/auctions", ownerId, {
       title: "Realtime lot",
       description: "Watched over SSE.",
@@ -146,7 +150,13 @@ describe.skipIf(
       minimumBidIncrementMinor: "100",
     });
     expect(created.status).toBe(201);
-    const { id: auctionId } = (await created.json()) as { id: string };
+    return ((await created.json()) as { id: string }).id;
+  }
+
+  it("streams a bid accepted over HTTP to an SSE client", async () => {
+    const ownerId = await insertUser();
+    const bidderId = await insertUser();
+    const auctionId = await createAuction(ownerId);
 
     const client = await SseTestClient.open(`${edgeUrl}/v1/stream?auctions=${auctionId}`);
     try {
@@ -177,6 +187,64 @@ describe.skipIf(
           currencyCode: "USD",
           occurredAt: expect.any(String),
         },
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  it("closes an auction at its deadline and shows the winner to an SSE client", async () => {
+    const ownerId = await insertUser();
+    const bidderId = await insertUser();
+    const otherBidderId = await insertUser();
+    const auctionId = await createAuction(ownerId);
+    const client = await SseTestClient.open(`${edgeUrl}/v1/stream?auctions=${auctionId}`);
+    try {
+      await client.waitForTimeline(auctionId, ["snapshot@1"]);
+      await post(`/v1/auctions/${auctionId}/bids`, bidderId, {
+        amountMinor: "1000",
+        idempotencyKey: randomUUID(),
+      });
+      const winning = await post(`/v1/auctions/${auctionId}/bids`, otherBidderId, {
+        amountMinor: "1100",
+        idempotencyKey: randomUUID(),
+      });
+      const { bid } = (await winning.json()) as { bid: { id: string } };
+      await client.waitForTimeline(auctionId, ["snapshot@1", "bid-accepted@2", "bid-accepted@3"]);
+
+      // Time cannot be waited for (an auction lasts at least a minute), so
+      // the deadline is moved into the past. Everything after that is the
+      // finalizer process acting on its own.
+      await pool!.query(
+        `UPDATE auctions
+         SET starts_at = clock_timestamp() - interval '2 hours',
+             ends_at = clock_timestamp() - interval '1 second'
+         WHERE id = $1`,
+        [auctionId],
+      );
+
+      // The edge does not know AuctionClosed.v1, so it sees a version it
+      // cannot apply and resyncs from auction-service: a snapshot at the new
+      // version, showing the closed phase.
+      await client.waitForTimeline(auctionId, [
+        "snapshot@1",
+        "bid-accepted@2",
+        "bid-accepted@3",
+        "snapshot@4",
+      ]);
+      expect(client.messages[3]?.data).toMatchObject({
+        auctionId,
+        auctionVersion: "4",
+        phase: "closed",
+        leadingBid: { bidId: bid.id, amountMinor: "1100" },
+      });
+
+      const response = await fetch(`${apiUrl}/v1/auctions/${auctionId}`);
+      expect(await response.json()).toMatchObject({
+        id: auctionId,
+        phase: "closed",
+        version: "4",
+        winningBidId: bid.id,
       });
     } finally {
       client.close();

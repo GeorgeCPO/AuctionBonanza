@@ -11,13 +11,13 @@ Status: accepted as the initial direction; expected to evolve through deliberate
 
 ## Initial deployment units
 
-| Service            | Initial responsibility                                                                                                                                                         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `identity-service` | User registration, authentication, and user-owned data.                                                                                                                        |
-| `auction-service`  | Auction lifecycle and synchronous bid acceptance. Auctions and bids remain together initially because they share a strong correctness boundary.                                |
-| `realtime-gateway` | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid. Proposed design: [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md). |
+| Service            | Initial responsibility                                                                                                                                                                                                  |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `identity-service` | User registration, authentication, and user-owned data.                                                                                                                                                                 |
+| `auction-service`  | Auction lifecycle, synchronous bid acceptance, and finalization of ended auctions ([`FINALIZATION.md`](FINALIZATION.md)). Auctions and bids remain together initially because they share a strong correctness boundary. |
+| `realtime-gateway` | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid. Proposed design: [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md).                                          |
 
-A settlement worker can be added when orders, payments, and auction closing enter scope.
+A settlement worker can be added when orders and payments enter scope. It would consume `AuctionClosed.v1`; auction closing itself is done by a finalizer inside `auction-service`.
 
 ## Request and event flow
 
