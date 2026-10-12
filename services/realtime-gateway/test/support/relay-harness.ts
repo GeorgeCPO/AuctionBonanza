@@ -6,7 +6,8 @@ import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { pino, type Logger } from "pino";
 import { createCluster } from "redis";
 
-import { auctionChannel, type BusPublisher } from "../../src/bus/bus.js";
+import { auctionChannel } from "../../src/bus/bus.js";
+import type { BusPublisher } from "../../src/bus/bus.types.js";
 import { EventRelay } from "../../src/relay/relay.js";
 
 const silentKafkaLogger: KafkaJS.Logger = {
@@ -56,7 +57,9 @@ export async function waitFor(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${description}`);
+    if (Date.now() > deadline) {
+      throw new Error(`Timed out waiting for ${description}`);
+    }
     await delay(25);
   }
 }
@@ -279,7 +282,9 @@ export async function startRelay(options: StartRelayOptions): Promise<RelayRun> 
   return {
     relay,
     stop: async () => {
-      if (stopped) return;
+      if (stopped) {
+        return;
+      }
       stopped = true;
       await relay.stop();
     },

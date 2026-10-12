@@ -1,34 +1,24 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 
+import {
+  hasDuplicates,
+  hostPortList,
+  logLevelSchema,
+  nodeEnvSchema,
+  splitList,
+} from "../shared/config.js";
+
 // Time allowed on shutdown, beyond the slowest in-flight publish, for the
 // consumer to commit its stored offsets and leave the group.
 const SHUTDOWN_HEADROOM_MS = 1_000;
 
 const kafkaNamePattern = "^[A-Za-z0-9._-]{1,100}$";
 
-function hostPortList() {
-  return Type.Array(Type.String({ pattern: "^[A-Za-z0-9.-]+:[0-9]{1,5}$" }), {
-    minItems: 1,
-    maxItems: 32,
-  });
-}
-
 const relayConfigSchema = Type.Object(
   {
-    nodeEnv: Type.Union([
-      Type.Literal("development"),
-      Type.Literal("test"),
-      Type.Literal("production"),
-    ]),
-    logLevel: Type.Union([
-      Type.Literal("fatal"),
-      Type.Literal("error"),
-      Type.Literal("warn"),
-      Type.Literal("info"),
-      Type.Literal("debug"),
-      Type.Literal("trace"),
-    ]),
+    nodeEnv: nodeEnvSchema,
+    logLevel: logLevelSchema,
     kafkaBrokers: hostPortList(),
     kafkaClientId: Type.String({ pattern: kafkaNamePattern }),
     kafkaGroupId: Type.String({ pattern: kafkaNamePattern }),
@@ -92,10 +82,6 @@ export function loadRelayConfig(): RelayConfig {
   return parseRelayConfig(process.env);
 }
 
-function splitList(value: string): string[] {
-  return value === "" ? [] : value.split(",").map((item) => item.trim());
-}
-
 function relationalProblems(config: RelayConfig): string[] {
   const problems: string[] = [];
   if (config.retryBaseDelayMs > config.retryMaxDelayMs) {
@@ -108,10 +94,10 @@ function relationalProblems(config: RelayConfig): string[] {
       `/shutdownTimeoutMs: must be at least publishTimeoutMs + ${SHUTDOWN_HEADROOM_MS}`,
     );
   }
-  if (new Set(config.kafkaBrokers).size !== config.kafkaBrokers.length) {
+  if (hasDuplicates(config.kafkaBrokers)) {
     problems.push("/kafkaBrokers: must not contain duplicates");
   }
-  if (new Set(config.valkeyNodes).size !== config.valkeyNodes.length) {
+  if (hasDuplicates(config.valkeyNodes)) {
     problems.push("/valkeyNodes: must not contain duplicates");
   }
   return problems;

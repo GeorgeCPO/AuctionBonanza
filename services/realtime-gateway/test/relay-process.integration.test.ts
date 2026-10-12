@@ -57,7 +57,9 @@ describe.skipIf(brokers === undefined || valkeyNodes === undefined)(
     afterAll(async () => {
       await bus?.close();
       await topics?.disconnect();
-      if (buildDirectory !== undefined) await rm(buildDirectory, { recursive: true, force: true });
+      if (buildDirectory !== undefined) {
+        await rm(buildDirectory, { recursive: true, force: true });
+      }
     });
 
     it("refuses to start with invalid configuration", async () => {

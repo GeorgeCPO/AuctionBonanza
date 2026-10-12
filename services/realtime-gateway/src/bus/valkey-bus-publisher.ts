@@ -1,17 +1,6 @@
-import type { Logger } from "pino";
 import { createCluster } from "redis";
 
-import type { BusPublisher } from "./bus.js";
-
-export interface ValkeyBusPublisherOptions {
-  // Seed nodes as host:port; the client discovers the rest of the cluster.
-  nodes: readonly string[];
-  // Bounds one publish, including time spent queued while a node reconnects.
-  // A publish that times out rejects, so the relay retries it instead of
-  // waiting on a dead connection.
-  commandTimeoutMs: number;
-  logger: Logger;
-}
+import type { BusPublisher, ValkeyBusPublisherOptions } from "./bus.types.js";
 
 // Publishes with SPUBLISH through node-redis's cluster client, which routes
 // each channel to the primary owning its hash slot and follows MOVED
@@ -55,7 +44,9 @@ export class ValkeyBusPublisher implements BusPublisher {
   }
 
   async close(): Promise<void> {
-    if (!this.connected) return;
+    if (!this.connected) {
+      return;
+    }
     this.connected = false;
     await this.cluster.close();
   }
