@@ -1,7 +1,8 @@
 # Realtime Gateway
 
 Status: proposed. Implemented so far: the auction-service prerequisites, the
-local and CI Valkey cluster, and the relay (slices 1 to 3).
+local and CI Valkey cluster, the relay (slices 1 to 3), and the thin SSE edge
+(slice 4, step 1; see [Edge implementation status](#edge-implementation-status)).
 
 The realtime gateway streams committed auction changes to clients over
 Server-Sent Events (SSE). It is a read-side delivery system. It never decides
@@ -324,6 +325,11 @@ Status: decided.
 | Relay client | **node-redis** (`redis` 6.x) cluster client: `sPublish` routes by channel slot and follows `MOVED`. |
 | Edge client  | **node-redis standalone clients, one per primary**, managed by the gateway's own shard subscriber.  |
 
+The thin edge (step 1) still subscribes through node-redis's cluster client;
+the shard subscriber replaces it in step 2. See
+[Edge implementation status](#edge-implementation-status) for what that
+leaves uncovered.
+
 **Why Valkey.** Both engines speak the same protocol, and this design uses only
 sharded pub/sub, `CLUSTER SHARDS`, and `CLIENT KILL`. The deciding factors are
 where each runs on AWS and its license. ElastiCache's Redis OSS engine stopped
@@ -411,6 +417,8 @@ cluster topology periodically, which catches any slot move that a push
 message did not report.
 
 ## Edge shard subscriber
+
+Status: not implemented yet (step 2 of the edge).
 
 The edge owns its subscriptions directly instead of delegating them to a
 cluster client:
@@ -507,6 +515,139 @@ read storm on `auction-service`.
 An event is serialized into its SSE frame once per edge, then written to every
 watching connection. Serialization cost is per edge, not per client.
 
+### Edge implementation status
+
+Step 1, the thin edge, is implemented in `services/realtime-gateway/src/edge/`
+and run by `edge.main.ts`, a process separate from the relay with its own
+validated configuration (`.env.edge.example`).
+
+- **HTTP.** `GET /v1/stream` and `GET /health` on plain `node:http`. A stream
+  needs direct control over the response and its write buffer, and there is
+  nothing else to route, so a framework would add little.
+- **Registry** (`auction-registry.ts`), **watched auction**
+  (`watched-auction.ts`) and **sync rules** (`auction-sync.ts`). One
+  `WatchedAuction` per watched auction, shared by every connection of the
+  process, with the subscribe-then-read order, the version rule, the buffer,
+  and the 30 s linger described above. The work is split in three:
+  - `WatchedAuction` owns what is per auction but not a rule: its clients
+    (with the fan-out), the linger and retry timers, which sync attempt is
+    current (and so whether a late read is stale), the cached subscription,
+    and whether the auction was discarded. It never talks to the bus or to
+    auction-service; the registry gives it the operations to run.
+  - `AuctionSync` owns one auction's state (what is known, at which version,
+    the events buffered while syncing) and changes it only through three
+    inputs: `onBusEvent`, `onLiveStateRead`, and `requestResync`. Each returns
+    the effects to carry out as data: "send this bid", "send a snapshot",
+    "start a read (after a backoff or not)", and counters. It never waits, sets
+    a timer, or touches the network, so each rule is read and tested on its
+    own, and "nothing can happen between these two lines" holds because the
+    code cannot wait. Effects are returned, not called back, so the state is
+    already final when the registry acts on them (an effect such as a slow
+    client unwatching cannot reach a half-updated object).
+  - The registry keeps the map of auctions and does the work that needs the
+    outside world: it subscribes on the bus, reads live states, applies the
+    backoff policy, and carries out `AuctionSync`'s effects in order.
+
+  Decisions made while implementing it:
+  - Events buffered during a read are folded into the snapshot that ends the
+    sync, not sent one by one. The snapshot replaces the client's state anyway.
+  - A client that joins while its auction resyncs receives the last known
+    snapshot at once and the fresh one when the resync ends. Both are
+    consistent states, and the client is not left waiting during an outage.
+  - Each sync has a generation number. A read that finishes for an older sync
+    is discarded, because it may predate the event or the connection loss that
+    made the newer sync necessary.
+  - An event of a type the edge cannot apply (one the relay learned first) is
+    treated like a gap when it is the next version: the auction changed in a
+    way only a read can reproduce. A bus message that names no auction version
+    is logged and ignored; the next event reveals the gap.
+  - An auction that does not exist is reported as `unavailable` and held at
+    version 0, so any later event of it triggers a read. See the creation gap
+    below.
+  - A failed subscribe or read is retried with the relay's capped exponential
+    backoff. A buffer that exceeds its bound (1000 events) is discarded and
+    the auction is read again, since a read that started before the discarded
+    events could miss them.
+  - Consecutive syncs that do not end live back off together: a failed read,
+    a gap that the read did not close, and a buffer overflow during a sync all
+    count as attempts, and the count resets only when the auction is live
+    again. Without that, a read that lags the bus (for example, a future read
+    replica) would be repeated in a tight loop. A gap found while live is
+    still repaired at once.
+
+- **Live-state reads** (`live-states.ts`). Loads requested within 5 ms are sent
+  together, at most 100 ids per request and 4 requests in flight. A load
+  requested while its batch is waiting joins it; one requested after the batch
+  was sent starts a new request, because a resync needs a read that begins
+  after it was requested.
+- **Bus** (`bus/valkey-bus-subscriber.ts`). `SSUBSCRIBE` through node-redis's
+  cluster client. The subscriber watches node-redis's per-primary subscriber
+  connections directly. On `reconnecting` it reports an interruption, and the
+  registry resyncs every watched auction. The resync reads only once every
+  lost connection emitted `ready` again, which node-redis emits only after it
+  has resubscribed every channel and received the confirmations. Subscribes
+  and unsubscribes of one channel run in order, because node-redis would
+  otherwise attach a new listener to a channel whose `SUNSUBSCRIBE` is still in
+  flight and drop it when the reply arrives. When node-redis fails to follow a
+  moved channel (`sharded-channel-moved-error`), it has already removed the
+  channel's listener, so the registry subscribes that auction again and
+  resyncs it.
+- **Slow clients.** A connection whose unwritten bytes exceed 1 MiB is closed;
+  the client reconnects and starts from snapshots.
+- **Counters.** The registry counts buffered, applied, and dropped events,
+  resyncs by reason, malformed messages, and auctions syncing. Resyncs, gaps,
+  and malformed messages are also logged. The tests read the counters;
+  exporting them as metrics comes with observability work.
+
+Known gaps, to be closed in step 2 or later:
+
+- **Slot moves and failovers can lose messages silently.** node-redis moves a
+  channel to its new owner internally, and reports only failures, which the
+  edge handles (see above). The successful case is silent:
+  - On an unsolicited `sunsubscribe` or a `MOVED` reply, messages published
+    before the new owner confirms the subscription are lost without an
+    interruption.
+  - On a failover, node-redis's topology refresh drops the old primary's
+    connection. It starts resubscribing that connection's channels at the new
+    primary without waiting, then closes the old connection, which the edge
+    takes as "nothing left to restore". The resync can then read before the
+    new subscriptions are confirmed, and miss an event published in between.
+    If that resubscription fails, node-redis leaves its rejection unhandled,
+    which ends the edge process (clients reconnect to other edges).
+
+  The affected auctions are repaired only by their next event (a gap), or not
+  at all if none follows. Step 2 replaces the cluster client with the
+  [shard subscriber](#edge-shard-subscriber): one connection per primary, a
+  periodic `CLUSTER SHARDS` comparison, and a resync on every move, exercised
+  with `CLUSTER SETSLOT` and a primary failover.
+
+- **One unavailable shard stalls the whole edge.** A lost connection resyncs
+  every watched auction, not only those on its shard, and every read waits
+  until all lost connections are back. While one primary is down, no auction
+  on that edge receives changes, and new watchers of auctions the edge does
+  not hold yet wait for their first snapshot. The shard subscriber resyncs
+  per connection.
+- **No conflation.** Slow clients are closed rather than
+  [conflated](#slow-clients).
+- **Mass resyncs have no jitter.** They are batched and bounded per edge, but
+  every edge starts its resync as soon as its connections are back.
+- **Shutdown ends every stream at once.** A rolling deploy should spread the
+  closes over a drain window (see the failure table).
+- **A created auction can stay `unavailable` until its first bid.** Creation is
+  version 1 and emits no event (the snapshot is the baseline). An edge that
+  read the auction just before it was created holds "missing", and no event
+  can correct that: the next one is the first bid, which shows up as a gap and
+  triggers a read. Until then, clients of that edge see `unavailable`. It needs
+  a client to watch an id before the auction exists, and a read to land in that
+  window, so it is rare, but the randomized registry test found it. Options:
+  emit an `AuctionCreated` event at version 1 from `auction-service`, or read
+  "missing" auctions again after a short time. Neither is done yet.
+- **`phase` is as of the last read.** The edge forwards the phase that
+  `auction-service` derived when it was read. A snapshot served from memory
+  later does not move it from `open` to `awaiting_finalization` when `endsAt`
+  passes; clients derive time-based changes from `startsAt`, `endsAt`, and
+  `serverTime`. Finalization events will make the transition explicit.
+
 ## Client protocol
 
 ```text
@@ -541,6 +682,9 @@ data: {"auctionId":"43","reason":"not-found"}
 - On every connect, the edge sends one `snapshot` per auction, then changes.
   SSE `id:` fields and `Last-Event-ID` are not used, because a new connection
   always starts from snapshots.
+- A `snapshot` carries `auctionId`, `auctionVersion`, `phase`,
+  `currencyCode`, `startsAt`, `endsAt`, `cancelledAt`, `closedAt`,
+  `leadingBid`, and `serverTime`.
 - **Client rule:** keep one version per auction and apply any message whose
   version is greater than it. A `snapshot` replaces the state. The server only
   ever sends contiguous changes or a snapshot, so the client needs no gap
@@ -562,24 +706,24 @@ reconnects.
 
 ## Failure scenarios
 
-| Scenario                                             | What happens                                                                                                                                                                        | Client sees                                                                     |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Kafka delivers an event 5 times                      | The relay forwards each copy. The edge applies the first and drops the rest (`v ≤ c`).                                                                                              | One change.                                                                     |
-| Outbox late duplicate `v, v+1, v`                    | The edge drops the second `v`.                                                                                                                                                      | `v`, `v+1`.                                                                     |
-| Relay crashes after `SPUBLISH`, before commit        | Its partitions stall until the group's session timeout (`RELAY_SESSION_TIMEOUT_MS`) expires; then another relay re-reads from the committed offset and publishes again.             | Nothing extra; edges drop the duplicates.                                       |
-| Relay publishes `v+1` before `v` (rebalance overlap) | The edge sees a gap, resyncs, then drops `v` when it arrives.                                                                                                                       | A `snapshot` at `v+1` or later.                                                 |
-| Malformed event on the topic                         | The relay logs and skips it. The next event of that auction reveals the gap.                                                                                                        | A `snapshot` once the auction changes again.                                    |
-| All relays down, or lagging                          | Nothing is published. Edges keep serving their last state. When relays recover they forward the backlog in order, and edges drop what is already reflected.                         | Correct but stale state, then the missed changes in order.                      |
-| Relay group new, or its offsets expired              | The relay replays the retained history from the oldest event. Edges drop what they already reflect.                                                                                 | Nothing extra; possibly duplicates, which edges drop.                           |
-| Retention deleted events the relay had not read      | The relay continues from the oldest retained event; those events are skipped.                                                                                                       | A `snapshot` once each affected auction changes again; until then, stale state. |
-| Valkey unavailable                                   | Relays pause and stop committing. Edges lose their subscriptions and keep retrying. When Valkey returns, edges resubscribe and resync, and relays forward the backlog.              | Stale state during the outage, then `snapshot`s.                                |
-| One Valkey shard fails over                          | Connections to that shard drop. Edges resync the auctions on it; relays retry publishes to it.                                                                                      | A `snapshot` for the affected auctions.                                         |
-| Valkey resharding moves a slot                       | Edges learn of it from `sunsubscribe`, a `MOVED` reply, or the periodic topology check, resubscribe at the new owner, and resync those auctions.                                    | A `snapshot` for the affected auctions.                                         |
-| Edge too slow for Valkey                             | Valkey closes the edge's connection; the edge reconnects and resyncs.                                                                                                               | A `snapshot` per watched auction.                                               |
-| `auction-service` unavailable during a resync        | The auction stays `syncing` and its events stay buffered, with a bound. Fetches retry with backoff. On buffer overflow the buffer is discarded, since the fetch replaces it anyway. | Last good state, no changes until the fetch succeeds.                           |
-| An edge crashes                                      | Its clients reconnect through the load balancer to other edges, which serve memory or fetch in bulk.                                                                                | A reconnect, then `snapshot`s.                                                  |
-| Rolling edge deploy                                  | A draining edge stops accepting connections and closes existing ones spread over a drain window, so clients do not all reconnect at the same instant.                               | A reconnect, then `snapshot`s.                                                  |
-| Slow client                                          | The edge conflates that connection.                                                                                                                                                 | Skipped intermediate prices, then current `snapshot`s.                          |
+| Scenario                                             | What happens                                                                                                                                                                                                      | Client sees                                                                     |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Kafka delivers an event 5 times                      | The relay forwards each copy. The edge applies the first and drops the rest (`v ≤ c`).                                                                                                                            | One change.                                                                     |
+| Outbox late duplicate `v, v+1, v`                    | The edge drops the second `v`.                                                                                                                                                                                    | `v`, `v+1`.                                                                     |
+| Relay crashes after `SPUBLISH`, before commit        | Its partitions stall until the group's session timeout (`RELAY_SESSION_TIMEOUT_MS`) expires; then another relay re-reads from the committed offset and publishes again.                                           | Nothing extra; edges drop the duplicates.                                       |
+| Relay publishes `v+1` before `v` (rebalance overlap) | The edge sees a gap, resyncs, then drops `v` when it arrives.                                                                                                                                                     | A `snapshot` at `v+1` or later.                                                 |
+| Malformed event on the topic                         | The relay logs and skips it. The next event of that auction reveals the gap.                                                                                                                                      | A `snapshot` once the auction changes again.                                    |
+| All relays down, or lagging                          | Nothing is published. Edges keep serving their last state. When relays recover they forward the backlog in order, and edges drop what is already reflected.                                                       | Correct but stale state, then the missed changes in order.                      |
+| Relay group new, or its offsets expired              | The relay replays the retained history from the oldest event. Edges drop what they already reflect.                                                                                                               | Nothing extra; possibly duplicates, which edges drop.                           |
+| Retention deleted events the relay had not read      | The relay continues from the oldest retained event; those events are skipped.                                                                                                                                     | A `snapshot` once each affected auction changes again; until then, stale state. |
+| Valkey unavailable                                   | Relays pause and stop committing. Edges lose their subscriptions and keep retrying. When Valkey returns, edges resubscribe and resync, and relays forward the backlog.                                            | Stale state during the outage, then `snapshot`s.                                |
+| One Valkey shard fails over                          | Connections to that shard drop. Edges resync the auctions on it; relays retry publishes to it. Until step 2 the edge resyncs every auction and can read too early; see [known gaps](#edge-implementation-status). | A `snapshot` for the affected auctions.                                         |
+| Valkey resharding moves a slot                       | Edges learn of it from `sunsubscribe`, a `MOVED` reply, or the periodic topology check, resubscribe at the new owner, and resync those auctions.                                                                  | A `snapshot` for the affected auctions.                                         |
+| Edge too slow for Valkey                             | Valkey closes the edge's connection; the edge reconnects and resyncs.                                                                                                                                             | A `snapshot` per watched auction.                                               |
+| `auction-service` unavailable during a resync        | The auction stays `syncing` and its events stay buffered, with a bound. Fetches retry with backoff. On buffer overflow the buffer is discarded, since the fetch replaces it anyway.                               | Last good state, no changes until the fetch succeeds.                           |
+| An edge crashes                                      | Its clients reconnect through the load balancer to other edges, which serve memory or fetch in bulk.                                                                                                              | A reconnect, then `snapshot`s.                                                  |
+| Rolling edge deploy                                  | A draining edge stops accepting connections and closes existing ones spread over a drain window, so clients do not all reconnect at the same instant.                                                             | A reconnect, then `snapshot`s.                                                  |
+| Slow client                                          | The edge conflates that connection.                                                                                                                                                                               | Skipped intermediate prices, then current `snapshot`s.                          |
 
 **Known limitation:** an edge cannot tell a quiet auction from a stalled relay.
 Clients see correct but possibly old state without an indication of it. A later
@@ -600,7 +744,36 @@ can mark the stream as degraded.
 ## Testing
 
 Integration tests against real Kafka, Valkey, and PostgreSQL from the root
-`docker-compose.yml`, in the same style as the outbox publisher tests.
+`docker-compose.yml`, in the same style as the outbox publisher tests. Items
+marked _(step 2)_ wait for the shard subscriber or conflation.
+
+The edge's tests are split by what they need. `edge.integration.test.ts` runs
+the edge against the real Valkey cluster, publishes events to the bus directly,
+and serves live states from a stub whose reads a test can hold.
+`edge-process.integration.test.ts` runs the built edge as its own process
+(invalid configuration, SIGTERM). The root end-to-end suite,
+`tests/e2e/test/realtime-bid.test.ts`, runs every hop for real: the
+`auction-service` API and outbox publisher, the relay, and the edge, each
+compiled and run as its own process, with Kafka, Valkey, and PostgreSQL.
+`valkey-bus-subscriber.integration.test.ts` checks the
+subscriber on its own against Valkey. `watched-auction.test.ts` covers the
+clients, timers, attempt numbering, and subscription caching of
+`WatchedAuction` with fake time. `auction-sync.test.ts` covers every rule
+of `AuctionSync` by feeding it inputs and checking the effects it returns and
+the state it exposes, with frozen inputs so a rule that changed its input
+would throw. `auction-registry.test.ts` covers races
+that are hard to stage against Valkey, such as a connection lost while a read
+is in flight, or reads that cannot close a gap.
+`auction-registry.simulation.test.ts` is a randomized check of the design's
+promise against the real registry: in 250 seeded worlds, events are delivered
+late, twice, out of order, or lost with a dropped connection or subscription;
+reads are slow, fail, or return the state as of their request; clients come
+and go. Every client must see a snapshot first, only contiguous changes after
+it, and never go backwards, and at regular quiet points and at the end every
+client must hold the database's state. A failure prints its seed and the last
+steps, and `SIM_SEED=<n>` replays it. The test also fails if the worlds stop
+reaching a situation (a gap, a lost subscription, a buffer overflow), so it
+cannot pass by doing nothing.
 
 - End to end: a bid accepted over HTTP reaches an SSE client as
   `bid-accepted` with the right version.
@@ -609,11 +782,15 @@ Integration tests against real Kafka, Valkey, and PostgreSQL from the root
 - `v+1` before `v` triggers a resync and ends at the correct state.
 - An event committed while the first subscriber's live-state read is in
   flight is applied exactly once (a gate holds the read).
-- Killing the edge's Valkey connection (`CLIENT KILL TYPE pubsub`) during
-  publishing ends with every client at the correct version.
-- Migrating a watched auction's slot to another primary (`CLUSTER SETSLOT`)
-  ends with every client at the correct version, including when the
-  `sunsubscribe` push is missed and only the periodic topology check sees it.
+- Killing the edge's Valkey connections (`CLIENT KILL ID`, chosen by client
+  name) resyncs every watched auction, and later events are delivered again.
+- After its connections are killed, the subscriber reports that it is
+  restored only once they have resubscribed: a message published the moment
+  it does reaches every channel. (Resolving early fails this test.)
+- _(step 2)_ Migrating a watched auction's slot to another primary
+  (`CLUSTER SETSLOT`) ends with every client at the correct version, including
+  when the `sunsubscribe` push is missed and only the periodic topology check
+  sees it.
 - Valkey down at the relay: no offset is committed, and every event arrives
   after recovery.
 - A malformed event is skipped, logged, and committed; the next event of that
@@ -621,7 +798,9 @@ Integration tests against real Kafka, Valkey, and PostgreSQL from the root
 - A new group forwards events produced before it started.
 - After retention deleted unread events, the relay continues from the oldest
   retained event.
-- A slow client is conflated and ends at the current state.
+- _(step 2)_ A slow client is conflated and ends at the current state. Until
+  then, unit tests check that a connection over its write bound is closed,
+  including when its opening snapshots overflow it.
 - The version trigger rejects a version bump without an outbox event, and a
   bump by more than one.
 - The live-state endpoint returns a version and leading bid from the same
@@ -639,8 +818,12 @@ Integration tests against real Kafka, Valkey, and PostgreSQL from the root
    integration tests are gated on `TEST_VALKEY_NODES`.
 3. **Relay:** the consumer, envelope, publish-then-commit, pause on Valkey
    failure, and starting new groups at the oldest retained event.
-4. **Edge:** the shard subscriber, the subscription registry, live-state fetches, the version rule,
-   SSE, heartbeats, conflation, and graceful drain.
+4. **Edge**, in two steps:
+   1. The thin edge (implemented): the subscription registry, batched
+      live-state reads, the version rule, SSE, heartbeats, and a resync on
+      every Valkey reconnect, through node-redis's cluster client.
+   2. The shard subscriber with a `CLUSTER SETSLOT` and failover exercise,
+      conflation, and a spread-out drain.
 5. **Documentation and exercises:** update this document from "proposed", then
    add replicas to the local cluster to exercise primary failover.
 

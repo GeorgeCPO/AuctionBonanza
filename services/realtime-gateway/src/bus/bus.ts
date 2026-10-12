@@ -4,27 +4,61 @@
 //
 // See "Bus" in docs/REALTIME_GATEWAY.md.
 
+import { BID_ACCEPTED_V1_EVENT_TYPE, parseBidAcceptedV1 } from "@auction-bonanza/contracts";
+
+import type { AuctionEventEnvelope, BusAuctionEvent } from "./bus.types.js";
+
 export const BUS_ENVELOPE_VERSION = 1;
 
 export function auctionChannel(auctionId: string): string {
   return `auction:${auctionId}`;
 }
 
-// Pub/sub has no headers, so the event type travels inside the envelope. The
-// event is the Kafka payload as it was validated by its contract.
-export interface AuctionEventEnvelope {
-  v: typeof BUS_ENVELOPE_VERSION;
-  eventType: string;
-  event: unknown;
-}
-
-// Publishing resolves once the bus accepted the message. Delivery to
-// subscribers is at most once; see "Loss is observable" in the design.
-export interface BusPublisher {
-  publish(channel: string, message: string): Promise<void>;
-}
-
 export function serializeAuctionEvent(eventType: string, event: unknown): string {
   const envelope: AuctionEventEnvelope = { v: BUS_ENVELOPE_VERSION, eventType, event };
   return JSON.stringify(envelope);
 }
+
+// Parses a bus message. Throws when the message is not a valid envelope, or
+// when the event does not name its auction and version: such a message
+// cannot be placed in an auction's sequence, so the edge can only log it and
+// rely on the next event of that auction to reveal the gap.
+export function parseAuctionEventEnvelope(message: string): BusAuctionEvent {
+  const envelope = JSON.parse(message) as Partial<AuctionEventEnvelope> | null;
+  if (typeof envelope !== "object" || envelope === null || envelope.v !== BUS_ENVELOPE_VERSION) {
+    throw new TypeError("Message is not a version 1 bus envelope");
+  }
+  if (typeof envelope.eventType !== "string") {
+    throw new TypeError("Bus envelope has no event type");
+  }
+
+  if (envelope.eventType === BID_ACCEPTED_V1_EVENT_TYPE) {
+    const event = parseBidAcceptedV1(envelope.event);
+    return {
+      kind: "bid-accepted",
+      auctionId: event.auctionId,
+      version: BigInt(event.auctionVersion),
+      event,
+    };
+  }
+
+  // A type this edge does not know yet, for example one the relay learned
+  // first. It still changed the auction, so the edge must resync on it.
+  const { auctionId, auctionVersion } = (envelope.event ?? {}) as Record<string, unknown>;
+  if (
+    typeof auctionId !== "string" ||
+    !decimalIdPattern.test(auctionId) ||
+    typeof auctionVersion !== "string" ||
+    !decimalIdPattern.test(auctionVersion)
+  ) {
+    throw new TypeError(`${envelope.eventType} event has no auctionId and auctionVersion`);
+  }
+  return {
+    kind: "unsupported",
+    auctionId,
+    version: BigInt(auctionVersion),
+    eventType: envelope.eventType,
+  };
+}
+
+const decimalIdPattern = /^[1-9][0-9]*$/;
