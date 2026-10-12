@@ -148,7 +148,9 @@ describe("refresh-session PostgreSQL behavior", () => {
       );
       expect(session.rows[0]?.revoked_at).toBeInstanceOf(Date);
       expect(session.rows[0]?.revocation_reason).toBe("refresh_token_replay");
-      if (first.kind !== "success") throw new Error("expected first rotation to succeed");
+      if (first.kind !== "success") {
+        throw new Error("expected first rotation to succeed");
+      }
       await expect(service.rotate(first.credentials.refreshToken)).resolves.toEqual({
         kind: "invalid",
       });

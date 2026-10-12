@@ -292,7 +292,9 @@ describe.skipIf(infrastructureMissing)(
           return {
             query: async (text, values) => {
               const result = await client.query(text, values);
-              if (text === "COMMIT") throw new Error("Connection terminated unexpectedly");
+              if (text === "COMMIT") {
+                throw new Error("Connection terminated unexpectedly");
+              }
               return result;
             },
             release: (error) => client.release(error),

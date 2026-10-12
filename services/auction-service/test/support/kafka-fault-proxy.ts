@@ -30,7 +30,9 @@ export class KafkaFaultProxy {
 
   cut(): void {
     this.reachable = false;
-    for (const socket of this.sockets) socket.destroy();
+    for (const socket of this.sockets) {
+      socket.destroy();
+    }
   }
 
   restore(): void {

@@ -165,7 +165,9 @@ describe("auction HTTP API", () => {
     async (search) => {
       const { app, list, deny } = makeListingApp();
       const query = new URLSearchParams();
-      if (search !== undefined) query.set("search", search);
+      if (search !== undefined) {
+        query.set("search", search);
+      }
       const response = await app.inject(`/v1/auctions?${query.toString()}`);
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ items: [], nextCursor: null });

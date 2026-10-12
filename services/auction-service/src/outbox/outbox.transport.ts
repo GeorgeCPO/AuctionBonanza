@@ -84,7 +84,9 @@ export class KafkaMessageTransport implements MessageTransport {
   // A producer that never connected has nothing to flush; flushing it would
   // only raise a state error that hides why startup failed.
   async disconnect(timeoutMs: number): Promise<void> {
-    if (!this.connected) return;
+    if (!this.connected) {
+      return;
+    }
     this.connected = false;
     try {
       await this.producer.flush({ timeout: timeoutMs });

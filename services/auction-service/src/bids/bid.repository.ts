@@ -125,7 +125,9 @@ export class PostgresBidRepository implements BidRepository {
         [input.auctionId],
       );
       const auctionRow = auctionResult.rows[0] as AuctionLockRow | undefined;
-      if (auctionRow === undefined) throw new Error("Locked auction was not returned");
+      if (auctionRow === undefined) {
+        throw new Error("Locked auction was not returned");
+      }
 
       // Idempotency is checked before any other business rule: a retried
       // request must report what already happened, not be re-evaluated
@@ -212,7 +214,9 @@ export class PostgresBidRepository implements BidRepository {
         ],
       );
       const bidRow = insertedResult.rows[0] as BidRow | undefined;
-      if (bidRow === undefined) throw new Error("Inserted bid was not returned");
+      if (bidRow === undefined) {
+        throw new Error("Inserted bid was not returned");
+      }
 
       const updatedResult = await client.query(
         `UPDATE auctions
@@ -226,7 +230,9 @@ export class PostgresBidRepository implements BidRepository {
       const updatedAuctionRow = updatedResult.rows[0] as
         | { version: string; updated_at: Date }
         | undefined;
-      if (updatedAuctionRow === undefined) throw new Error("Updated auction was not returned");
+      if (updatedAuctionRow === undefined) {
+        throw new Error("Updated auction was not returned");
+      }
 
       const event = parseBidAcceptedV1({
         eventId: randomUUID(),

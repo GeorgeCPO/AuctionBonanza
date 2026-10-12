@@ -12,7 +12,7 @@ const MAX_AUCTION_ID = 9_223_372_036_854_775_807n;
 const auctionIdPattern = /^[1-9][0-9]{0,18}$/;
 
 // GET /v1/stream?auctions=1,2,3: one to `maxAuctions` distinct auction ids.
-export function parseStreamQuery(query: URLSearchParams, maxAuctions: number): StreamQuery {
+function parseStreamQuery(query: URLSearchParams, maxAuctions: number): StreamQuery {
   const invalid: StreamQuery = {
     kind: "invalid",
     message: `auctions must be 1 to ${maxAuctions} comma-separated auction IDs`,

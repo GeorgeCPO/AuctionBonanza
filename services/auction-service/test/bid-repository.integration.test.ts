@@ -48,7 +48,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
       [`bid-repo-${label}-${randomUUID()}@example.com`, `Bid ${label}`],
     );
     const row = result.rows[0];
-    if (row === undefined) throw new Error(`${label} fixture was not inserted`);
+    if (row === undefined) {
+      throw new Error(`${label} fixture was not inserted`);
+    }
     return row.id;
   }
 
@@ -121,7 +123,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
       ],
     );
     const row = result.rows[0];
-    if (row === undefined) throw new Error("auction fixture was not inserted");
+    if (row === undefined) {
+      throw new Error("auction fixture was not inserted");
+    }
     return row.id;
   }
 
@@ -140,7 +144,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
       bid: { auctionId, bidderId, amountMinor: "1000" },
       auction: { id: auctionId, version: "2" },
     });
-    if (outcome.kind !== "placed") throw new Error("expected placed");
+    if (outcome.kind !== "placed") {
+      throw new Error("expected placed");
+    }
     expect(outcome.auction.leadingBidId).toBe(outcome.bid.id);
 
     const auctionRow = await pool.query<{ leading_bid_id: string; version: string }>(
@@ -335,7 +341,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
     const tooLow = outcomes.filter((outcome) => outcome.kind === "bid_too_low");
     expect(placed).toHaveLength(1);
     expect(tooLow).toHaveLength(1);
-    if (tooLow[0]!.kind !== "bid_too_low") throw new Error("expected bid_too_low");
+    if (tooLow[0]!.kind !== "bid_too_low") {
+      throw new Error("expected bid_too_low");
+    }
     expect(tooLow[0]!.minimumQualifyingAmountMinor).toBe("1100");
 
     const auctionRow = await pool.query<{ version: string }>(
@@ -353,7 +361,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
       amountMinor: "1000",
       idempotencyKey: "key-1",
     });
-    if (first.kind !== "placed") throw new Error("expected placed");
+    if (first.kind !== "placed") {
+      throw new Error("expected placed");
+    }
 
     const replay = await repository.placeBid({
       auctionId,
@@ -539,7 +549,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL repository", () => {
       amountMinor: "1000",
       idempotencyKey: "key-1",
     });
-    if (outcome.kind !== "placed") throw new Error("expected placed");
+    if (outcome.kind !== "placed") {
+      throw new Error("expected placed");
+    }
 
     const auctionRow = await pool.query<{ updated_at: Date }>(
       `SELECT updated_at FROM auctions WHERE id = $1`,

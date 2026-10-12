@@ -157,7 +157,9 @@ export class OutboxPublisher {
         );
       }
 
-      if (pauseMs > 0) await abortableSleep(pauseMs, signal);
+      if (pauseMs > 0) {
+        await abortableSleep(pauseMs, signal);
+      }
     }
   }
 
@@ -204,7 +206,9 @@ export class OutboxPublisher {
     try {
       return await withTimeout(sending, this.options.publishTimeoutMs + PUBLISH_TIMEOUT_GRACE_MS);
     } catch (error) {
-      if (error instanceof PublishTimeoutError) this.watchLateDelivery(event, sending);
+      if (error instanceof PublishTimeoutError) {
+        this.watchLateDelivery(event, sending);
+      }
       throw error;
     }
   }
@@ -257,7 +261,9 @@ export class OutboxPublisher {
     acknowledged: readonly ClaimedOutboxEvent[],
     commitSent: boolean,
   ): void {
-    if (acknowledged.length === 0) return;
+    if (acknowledged.length === 0) {
+      return;
+    }
     this.options.logger.warn(
       { err: error, eventIds: acknowledged.map((event) => event.eventId) },
       commitSent ? OUTBOX_LOG_MESSAGES.markerCommitUnknown : OUTBOX_LOG_MESSAGES.markerNotCommitted,

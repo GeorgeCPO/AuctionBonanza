@@ -103,7 +103,9 @@ describe.skipIf(databaseUrl === undefined)("auction PostgreSQL schema", () => {
       [`auction-schema-${randomUUID()}@example.com`],
     );
     const insertedOwner = result.rows[0];
-    if (insertedOwner === undefined) throw new Error("owner fixture was not inserted");
+    if (insertedOwner === undefined) {
+      throw new Error("owner fixture was not inserted");
+    }
     ownerId = insertedOwner.id;
   });
 
