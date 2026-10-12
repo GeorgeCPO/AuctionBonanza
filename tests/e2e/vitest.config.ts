@@ -16,5 +16,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],
+    // The suite's own timeout (180 s) covers its tests but not its hooks,
+    // whose default is 10 s. beforeAll compiles two services and starts three
+    // processes, which a loaded CI runner can take longer than 10 s to do.
+    // The limit only turns a hang into a failure; the hook ends when it is
+    // ready.
+    hookTimeout: 180_000,
   },
 });
