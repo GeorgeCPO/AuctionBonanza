@@ -6,6 +6,7 @@ import type { FinalizationWorkerOptions } from "./finalization.types.js";
 // them, and so may log-based alerts.
 const LOG_MESSAGES = {
   closed: "auction closed",
+  closeFailed: "auction close failed; it will be retried and does not block other auctions",
   cycleFailed: "auction finalization failed",
 } as const;
 
@@ -13,9 +14,10 @@ export class FinalizationWorker {
   constructor(private readonly options: FinalizationWorkerOptions) {}
 
   // Closes due auctions one transaction at a time until none is left, or the
-  // signal aborts between two closes, and returns how many it closed. A
-  // failure throws and leaves the failed auction unclosed, so the next call
-  // claims it again.
+  // signal aborts between two closes, and returns how many it closed. An
+  // auction that cannot be closed is logged and passed over until its
+  // scheduled retry, so it never holds up the others. Only a failure to reach
+  // or write the database throws.
   async drain(signal?: AbortSignal): Promise<number> {
     let closed = 0;
 
@@ -23,6 +25,18 @@ export class FinalizationWorker {
       const outcome = await this.options.repository.finalizeNextDue();
       if (outcome.kind === "none_due") {
         return closed;
+      }
+      if (outcome.kind === "close_failed") {
+        this.options.logger.error(
+          {
+            auctionId: outcome.auctionId,
+            attempt: outcome.attempt,
+            retryDelayMs: outcome.retryDelayMs,
+            err: outcome.error,
+          },
+          LOG_MESSAGES.closeFailed,
+        );
+        continue;
       }
       closed += 1;
       this.options.logger.info(

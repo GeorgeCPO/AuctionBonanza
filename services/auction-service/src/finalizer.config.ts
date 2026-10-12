@@ -28,6 +28,7 @@ const finalizerConfigSchema = Type.Object(
     pollIntervalMs: Type.Integer({ minimum: 10, maximum: 60_000 }),
     retryBaseDelayMs: Type.Integer({ minimum: 10, maximum: 60_000 }),
     retryMaxDelayMs: Type.Integer({ minimum: 10, maximum: 3_600_000 }),
+    auctionRetryMaxDelayMs: Type.Integer({ minimum: 10, maximum: 86_400_000 }),
     shutdownTimeoutMs: Type.Integer({ minimum: 1_000, maximum: 600_000 }),
   },
   { additionalProperties: false },
@@ -46,6 +47,7 @@ export function parseFinalizerConfig(
     pollIntervalMs: Number(environment.FINALIZER_POLL_INTERVAL_MS ?? "1000"),
     retryBaseDelayMs: Number(environment.FINALIZER_RETRY_BASE_DELAY_MS ?? "500"),
     retryMaxDelayMs: Number(environment.FINALIZER_RETRY_MAX_DELAY_MS ?? "30000"),
+    auctionRetryMaxDelayMs: Number(environment.FINALIZER_AUCTION_RETRY_MAX_DELAY_MS ?? "300000"),
     shutdownTimeoutMs: Number(environment.FINALIZER_SHUTDOWN_TIMEOUT_MS ?? "15000"),
   };
 
@@ -54,6 +56,11 @@ export function parseFinalizerConfig(
   );
   if (problems.length === 0 && candidate.retryMaxDelayMs < candidate.retryBaseDelayMs) {
     problems.push("FINALIZER_RETRY_MAX_DELAY_MS must be at least FINALIZER_RETRY_BASE_DELAY_MS");
+  }
+  if (problems.length === 0 && candidate.auctionRetryMaxDelayMs < candidate.retryMaxDelayMs) {
+    problems.push(
+      "FINALIZER_AUCTION_RETRY_MAX_DELAY_MS must be at least FINALIZER_RETRY_MAX_DELAY_MS",
+    );
   }
   if (problems.length > 0) {
     throw new Error(`Invalid finalizer configuration: ${problems.join("; ")}`);

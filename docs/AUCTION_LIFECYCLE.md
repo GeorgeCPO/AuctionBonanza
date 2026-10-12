@@ -127,3 +127,5 @@ Finalization is implemented; the details and failure behavior are in
   led at the close. A closed auction with no `winning_bid_id` closed unsold.
 - A closed auction's outcome is immutable, and finalizing it again changes
   nothing and emits nothing.
+- A close that fails is retried later with backoff without holding up other
+  auctions; see [`FINALIZATION.md`](FINALIZATION.md#failed-closes).

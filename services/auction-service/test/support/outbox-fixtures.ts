@@ -147,6 +147,16 @@ export class AuctionFixtures {
     };
   }
 
+  // Simulates the passage of time for auctions waiting for a finalization
+  // retry.
+  async makeFinalizationRetriesDue(): Promise<void> {
+    await this.pool.query(
+      `UPDATE auctions
+       SET next_finalization_attempt_at = clock_timestamp() - interval '1 millisecond'
+       WHERE next_finalization_attempt_at IS NOT NULL`,
+    );
+  }
+
   // Simulates the passage of time for events waiting for a retry.
   async makeRetriesDue(): Promise<void> {
     await this.pool.query(

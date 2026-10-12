@@ -1,6 +1,7 @@
 import { pino } from "pino";
 import { describe, expect, it } from "vitest";
 
+import { captureLogger } from "./support/outbox-fixtures.js";
 import { FinalizationWorker } from "../src/auctions/finalization.worker.js";
 import type {
   FinalizationOutcome,
@@ -68,6 +69,40 @@ describe("FinalizationWorker", () => {
     await expect(worker(repository).drain(shutdown.signal)).resolves.toBe(1);
 
     expect(repository.calls).toBe(1);
+  });
+
+  it("logs a failed close, keeps draining, and does not count it as closed", async () => {
+    const { logger, entries } = captureLogger();
+    const repository = new ScriptedRepository([
+      {
+        kind: "close_failed",
+        auctionId: "7",
+        attempt: 2,
+        retryDelayMs: 4_000,
+        error: new Error("poisoned"),
+      },
+      sold,
+    ]);
+
+    const closed = await new FinalizationWorker({
+      repository,
+      pollIntervalMs: 5,
+      retryBackoff: { baseDelayMs: 5, maxDelayMs: 5 },
+      logger,
+    }).drain();
+
+    expect(closed).toBe(1);
+    expect(repository.calls).toBe(3);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        level: 50,
+        auctionId: "7",
+        attempt: 2,
+        retryDelayMs: 4_000,
+        msg: "auction close failed; it will be retried and does not block other auctions",
+      }),
+    );
+    expect(entries.some((entry) => entry.msg === "auction finalization failed")).toBe(false);
   });
 
   it("propagates a failure from drain so the loop can back off", async () => {
