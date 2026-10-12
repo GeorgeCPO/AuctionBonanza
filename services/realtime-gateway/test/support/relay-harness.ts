@@ -6,7 +6,8 @@ import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { pino, type Logger } from "pino";
 import { createCluster } from "redis";
 
-import { auctionChannel, type BusPublisher } from "../../src/bus/bus.js";
+import { auctionChannel } from "../../src/bus/bus.js";
+import type { BusPublisher } from "../../src/bus/bus.types.js";
 import { EventRelay } from "../../src/relay/relay.js";
 
 const silentKafkaLogger: KafkaJS.Logger = {

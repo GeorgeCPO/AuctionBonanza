@@ -1,7 +1,7 @@
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import type { Logger } from "pino";
 
-import type { BusPublisher } from "../bus/bus.js";
+import type { BusPublisher } from "../bus/bus.types.js";
 import { backoffDelayMs, type RetryBackoffPolicy } from "../shared/backoff.js";
 import { decideRelay, type SkipDecision } from "./relay.decision.js";
 

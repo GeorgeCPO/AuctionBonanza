@@ -1,6 +1,7 @@
 packages:
   - "services/*"
   - "packages/*"
+  - "tests/*"
 
 allowBuilds:
   "@confluentinc/kafka-javascript": true
