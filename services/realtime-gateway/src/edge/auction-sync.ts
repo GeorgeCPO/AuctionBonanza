@@ -70,7 +70,8 @@ export class AuctionSync {
     }
 
     const effects: SyncEffect[] = [];
-    if (this.applyEvent(event, effects) === "gap") {
+    const outcome = this.applyEvent(event, effects);
+    if (outcome === "gap") {
       // Keep the event: a read that lags behind it can still be completed
       // with it, instead of going live a version behind.
       this.buffer.push(event);
@@ -99,7 +100,8 @@ export class AuctionSync {
     this.buffer = [];
     const effects: SyncEffect[] = [];
     for (const [index, event] of buffered.entries()) {
-      if (this.applyEvent(event, effects) === "gap") {
+      const outcome = this.applyEvent(event, effects);
+      if (outcome === "gap") {
         // The read is behind the events: keep this event and the rest, read
         // again.
         this.buffer = buffered.slice(index);
@@ -166,7 +168,9 @@ export class AuctionSync {
     };
     this.currentVersion = event.version;
     effects.push({ kind: "count", counter: "eventsApplied" });
-    if (this.currentStatus === "live") effects.push({ kind: "send-bid", bid });
+    if (this.currentStatus === "live") {
+      effects.push({ kind: "send-bid", bid });
+    }
     return "applied";
   }
 }

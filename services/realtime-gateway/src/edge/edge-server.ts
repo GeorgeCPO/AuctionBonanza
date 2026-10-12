@@ -18,10 +18,14 @@ export function parseStreamQuery(query: URLSearchParams, maxAuctions: number): S
     message: `auctions must be 1 to ${maxAuctions} comma-separated auction IDs`,
   };
   const keys = [...query.keys()];
-  if (keys.length !== 1 || keys[0] !== "auctions") return invalid;
+  if (keys.length !== 1 || keys[0] !== "auctions") {
+    return invalid;
+  }
 
   const auctionIds = [...new Set(query.get("auctions")!.split(","))];
-  if (auctionIds.length > maxAuctions) return invalid;
+  if (auctionIds.length > maxAuctions) {
+    return invalid;
+  }
   const valid = auctionIds.every((id) => auctionIdPattern.test(id) && BigInt(id) <= MAX_AUCTION_ID);
   return valid ? { kind: "valid", auctionIds } : invalid;
 }
@@ -52,11 +56,15 @@ export class EdgeServer {
   // Stops accepting connections and ends every stream. Clients reconnect
   // through the load balancer to another edge.
   async close(): Promise<void> {
-    if (!this.server.listening) return;
+    if (!this.server.listening) {
+      return;
+    }
     const closed = new Promise<void>((resolve, reject) =>
       this.server.close((error) => (error === undefined ? resolve() : reject(error))),
     );
-    for (const connection of this.connections) connection.close();
+    for (const connection of this.connections) {
+      connection.close();
+    }
     // A client that stopped reading would hold its socket open until the
     // shutdown deadline; it reconnects either way.
     this.server.closeAllConnections();
@@ -66,11 +74,17 @@ export class EdgeServer {
   private handle(request: IncomingMessage, response: ServerResponse): void {
     const url = new URL(request.url ?? "/", "http://edge");
     if (url.pathname === "/health") {
-      if (request.method !== "GET") return this.reply(response, 405, "METHOD_NOT_ALLOWED");
+      if (request.method !== "GET") {
+        return this.reply(response, 405, "METHOD_NOT_ALLOWED");
+      }
       return this.json(response, 200, { status: "ok" });
     }
-    if (url.pathname !== "/v1/stream") return this.reply(response, 404, "NOT_FOUND");
-    if (request.method !== "GET") return this.reply(response, 405, "METHOD_NOT_ALLOWED");
+    if (url.pathname !== "/v1/stream") {
+      return this.reply(response, 404, "NOT_FOUND");
+    }
+    if (request.method !== "GET") {
+      return this.reply(response, 405, "METHOD_NOT_ALLOWED");
+    }
 
     const query = parseStreamQuery(url.searchParams, this.options.maxAuctionsPerStream);
     if (query.kind === "invalid") {
@@ -92,7 +106,9 @@ export class EdgeServer {
       },
       onClose: () => {
         this.connections.delete(connection);
-        for (const auctionId of auctionIds) registry.unwatch(auctionId, connection);
+        for (const auctionId of auctionIds) {
+          registry.unwatch(auctionId, connection);
+        }
       },
     });
     this.connections.add(connection);
@@ -101,7 +117,9 @@ export class EdgeServer {
     // A snapshot can overflow a client that reads too slowly; its connection
     // is then closed and already unwatched, so it must not watch the rest.
     for (const auctionId of auctionIds) {
-      if (connection.isClosed) break;
+      if (connection.isClosed) {
+        break;
+      }
       registry.watch(auctionId, connection);
     }
   }

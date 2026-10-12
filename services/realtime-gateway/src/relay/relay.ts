@@ -81,7 +81,9 @@ export class EventRelay {
   // then are committed on the way out.
   async stop(): Promise<void> {
     this.stopping = true;
-    for (const timer of this.resumeTimers) clearTimeout(timer);
+    for (const timer of this.resumeTimers) {
+      clearTimeout(timer);
+    }
     this.resumeTimers.clear();
     await this.consumer.disconnect();
   }
@@ -151,7 +153,9 @@ export class EventRelay {
     this.consumer.pause(partitions);
     const timer = setTimeout(() => {
       this.resumeTimers.delete(timer);
-      if (this.stopping) return;
+      if (this.stopping) {
+        return;
+      }
       try {
         this.consumer.resume(partitions);
       } catch (resumeError) {

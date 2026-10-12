@@ -67,8 +67,12 @@ export class ValkeyBusSubscriber implements BusSubscriber {
     // comment.)
     this.cluster.on("sharded-channel-moved-error", (error: unknown, channel: unknown) => {
       this.logger.error({ err: error, channel }, "could not follow a moved sharded channel");
-      if (typeof channel !== "string") return;
-      for (const listener of this.subscriptionLostListeners) listener(channel);
+      if (typeof channel !== "string") {
+        return;
+      }
+      for (const listener of this.subscriptionLostListeners) {
+        listener(channel);
+      }
     });
     // Emitted once for every new connection, including the subscriber
     // connections node-redis opens on its own after a topology change.
@@ -99,12 +103,16 @@ export class ValkeyBusSubscriber implements BusSubscriber {
   }
 
   whenRestored(): Promise<void> {
-    if (this.reconnecting.size === 0) return Promise.resolve();
+    if (this.reconnecting.size === 0) {
+      return Promise.resolve();
+    }
     return new Promise((resolve) => this.restoredWaiters.push(resolve));
   }
 
   async close(): Promise<void> {
-    if (!this.connected) return;
+    if (!this.connected) {
+      return;
+    }
     this.connected = false;
     await this.cluster.close();
   }
@@ -114,21 +122,30 @@ export class ValkeyBusSubscriber implements BusSubscriber {
   private observeShardSubscribers(): void {
     for (const master of this.cluster.masters) {
       const client = master.pubSub?.client;
-      if (client === undefined || this.observedClients.has(client)) continue;
+      if (client === undefined || this.observedClients.has(client)) {
+        continue;
+      }
       this.observedClients.add(client);
       const node = { host: master.host, port: master.port };
 
       client.on("reconnecting", () => {
-        if (this.reconnecting.has(client)) return;
+        if (this.reconnecting.has(client)) {
+          return;
+        }
         this.reconnecting.add(client);
         this.logger.warn(
           { node },
           "Valkey subscriber connection lost; watched auctions will resync",
         );
-        for (const listener of this.interruptionListeners) listener();
+        for (const listener of this.interruptionListeners) {
+          listener();
+        }
       });
       client.on("ready", () => {
-        if (!this.reconnecting.delete(client)) return;
+        const wasReconnecting = this.reconnecting.delete(client);
+        if (!wasReconnecting) {
+          return;
+        }
         this.logger.info({ node }, "Valkey subscriber connection restored and resubscribed");
         this.releaseRestoredWaiters();
       });
@@ -140,15 +157,22 @@ export class ValkeyBusSubscriber implements BusSubscriber {
       // is, and miss an event published in between. Closing that gap needs
       // the shard subscriber (step 2); see "Edge implementation status".
       client.on("end", () => {
-        if (this.reconnecting.delete(client)) this.releaseRestoredWaiters();
+        const wasReconnecting = this.reconnecting.delete(client);
+        if (wasReconnecting) {
+          this.releaseRestoredWaiters();
+        }
       });
     }
   }
 
   private releaseRestoredWaiters(): void {
-    if (this.reconnecting.size > 0) return;
+    if (this.reconnecting.size > 0) {
+      return;
+    }
     const waiters = this.restoredWaiters;
     this.restoredWaiters = [];
-    for (const resolve of waiters) resolve();
+    for (const resolve of waiters) {
+      resolve();
+    }
   }
 }

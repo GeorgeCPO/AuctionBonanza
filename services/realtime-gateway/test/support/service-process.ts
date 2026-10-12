@@ -92,7 +92,9 @@ export function startServiceProcess(
       return line;
     },
     stop: async () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+      }
       return exited;
     },
   };

@@ -225,9 +225,13 @@ export class SseTestClient {
       let event = "message";
       let data: string | undefined;
       for (const line of block.split("\n")) {
-        if (line.startsWith(":")) this.comments.push(line.slice(1).trim());
-        else if (line.startsWith("event: ")) event = line.slice("event: ".length);
-        else if (line.startsWith("data: ")) data = line.slice("data: ".length);
+        if (line.startsWith(":")) {
+          this.comments.push(line.slice(1).trim());
+        } else if (line.startsWith("event: ")) {
+          event = line.slice("event: ".length);
+        } else if (line.startsWith("data: ")) {
+          data = line.slice("data: ".length);
+        }
       }
       if (data !== undefined) {
         this.messages.push({ event, data: JSON.parse(data) as Record<string, unknown> });
@@ -314,7 +318,9 @@ export async function killSubscriberConnections(
     await client.connect();
     try {
       for (const { id, name } of await client.clientList({ TYPE: "PUBSUB" })) {
-        if (name !== clientName) continue;
+        if (name !== clientName) {
+          continue;
+        }
         await client.clientKill({ filter: "ID", id });
         killed += 1;
       }

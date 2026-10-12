@@ -62,8 +62,12 @@ export class LiveStateClient implements LiveStateFetcher {
     }
 
     const lookups = new Map<string, LiveStateLookup>();
-    for (const state of body.items) lookups.set(state.auctionId, { kind: "found", state });
-    for (const id of body.missingIds) lookups.set(id, { kind: "missing" });
+    for (const state of body.items) {
+      lookups.set(state.auctionId, { kind: "found", state });
+    }
+    for (const id of body.missingIds) {
+      lookups.set(id, { kind: "missing" });
+    }
     return lookups;
   }
 }
@@ -104,7 +108,9 @@ export class LiveStateBatcher implements LiveStateSource {
   private sendQueuedRequests(): void {
     while (this.requestsInFlight < this.options.maxConcurrentRequests) {
       const request = this.queuedRequests.shift();
-      if (request === undefined) return;
+      if (request === undefined) {
+        return;
+      }
       this.requestsInFlight += 1;
       void this.send(request).finally(() => {
         this.requestsInFlight -= 1;
@@ -125,7 +131,9 @@ export class LiveStateBatcher implements LiveStateSource {
         }
       }
     } catch (error) {
-      for (const load of request.values()) load.reject(error);
+      for (const load of request.values()) {
+        load.reject(error);
+      }
     }
   }
 }

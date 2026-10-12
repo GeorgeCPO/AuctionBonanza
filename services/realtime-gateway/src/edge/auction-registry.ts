@@ -49,7 +49,9 @@ export class AuctionRegistry {
   // the edge has one (possibly while a resync is under way, in which case a
   // fresh snapshot follows), otherwise once the first read completes.
   watch(auctionId: string, watcher: AuctionWatcher): void {
-    if (this.closed) return;
+    if (this.closed) {
+      return;
+    }
     let entry = this.entries.get(auctionId);
     if (entry === undefined) {
       entry = new WatchedAuction(auctionId, this.options.maxBufferedEvents);
@@ -57,18 +59,30 @@ export class AuctionRegistry {
       this.runEffects(entry, entry.sync.begin());
     }
     entry.addWatcher(watcher);
-    if (entry.sync.known !== undefined) watcher.send(this.snapshotFrame(entry));
+    if (entry.sync.known !== undefined) {
+      watcher.send(this.snapshotFrame(entry));
+    }
   }
 
   unwatch(auctionId: string, watcher: AuctionWatcher): void {
     const entry = this.entries.get(auctionId);
-    if (entry === undefined || !entry.removeWatcher(watcher)) return;
+    if (entry === undefined) {
+      return;
+    }
+    const wasLastWatcher = entry.removeWatcher(watcher);
+    if (!wasLastWatcher) {
+      return;
+    }
     entry.startLinger(this.options.lingerMs, () => this.remove(entry));
   }
 
   stats(): AuctionRegistryStats {
     let syncing = 0;
-    for (const entry of this.entries.values()) if (entry.sync.status === "syncing") syncing += 1;
+    for (const entry of this.entries.values()) {
+      if (entry.sync.status === "syncing") {
+        syncing += 1;
+      }
+    }
     return {
       auctions: this.entries.size,
       syncing,
@@ -81,12 +95,16 @@ export class AuctionRegistry {
   // every subscription with it.
   close(): void {
     this.closed = true;
-    for (const entry of this.entries.values()) entry.discard();
+    for (const entry of this.entries.values()) {
+      entry.discard();
+    }
     this.entries.clear();
   }
 
   private resyncAll(reason: ResyncReason): void {
-    if (this.entries.size === 0) return;
+    if (this.entries.size === 0) {
+      return;
+    }
     this.logger.warn({ reason, auctions: this.entries.size }, "resyncing every watched auction");
     for (const entry of this.entries.values()) {
       this.runEffects(entry, entry.sync.requestResync(reason));
@@ -97,7 +115,9 @@ export class AuctionRegistry {
   // again before anything it shows can be trusted.
   private resubscribe(channel: string): void {
     const entry = [...this.entries.values()].find((candidate) => candidate.channel === channel);
-    if (entry === undefined) return;
+    if (entry === undefined) {
+      return;
+    }
     this.logger.warn({ auctionId: entry.auctionId }, "subscription lost; resubscribing auction");
     entry.forgetSubscription();
     this.runEffects(entry, entry.sync.requestResync("subscription-lost"));
@@ -126,7 +146,9 @@ export class AuctionRegistry {
           entry.sendToWatchers(this.snapshotFrame(entry));
           break;
         case "start-sync":
-          if (effect.reason !== "initial") this.counters.resyncs[effect.reason] += 1;
+          if (effect.reason !== "initial") {
+            this.counters.resyncs[effect.reason] += 1;
+          }
           if (effect.receivedVersion !== undefined) {
             this.logger.info(
               {
@@ -161,12 +183,18 @@ export class AuctionRegistry {
       // otherwise an event published in between is neither in the read nor
       // delivered.
       await this.options.bus.whenRestored();
-      if (entry.isStale(attempt)) return;
+      if (entry.isStale(attempt)) {
+        return;
+      }
       const lookup = await this.options.liveStates.load(entry.auctionId);
-      if (entry.isStale(attempt)) return;
+      if (entry.isStale(attempt)) {
+        return;
+      }
       this.runEffects(entry, entry.sync.onLiveStateRead(lookup));
     } catch (error) {
-      if (entry.isStale(attempt)) return;
+      if (entry.isStale(attempt)) {
+        return;
+      }
       this.retryLater(entry, attempt, "auction sync failed; retrying", error);
     }
   }
@@ -189,7 +217,9 @@ export class AuctionRegistry {
   }
 
   private receive(entry: WatchedAuction, message: string): void {
-    if (entry.isDiscarded) return;
+    if (entry.isDiscarded) {
+      return;
+    }
     let event: BusAuctionEvent;
     try {
       event = parseAuctionEventEnvelope(message);

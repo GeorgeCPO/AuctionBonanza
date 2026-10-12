@@ -16,7 +16,9 @@ const MAX_BUFFERED = 3;
 function freeze<T>(value: T): T {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
     Object.freeze(value);
-    for (const child of Object.values(value)) freeze(child);
+    for (const child of Object.values(value)) {
+      freeze(child);
+    }
   }
   return value;
 }
@@ -49,7 +51,9 @@ const missing: LiveStateLookup = freeze({ kind: "missing" });
 function syncingWith(...events: BusAuctionEvent[]): AuctionSync {
   const sync = new AuctionSync(MAX_BUFFERED);
   sync.begin();
-  for (const event of events) sync.onBusEvent(event);
+  for (const event of events) {
+    sync.onBusEvent(event);
+  }
   return sync;
 }
 
@@ -301,6 +305,8 @@ describe("requestResync", () => {
 });
 
 function bidAcceptedEventOf(event: BusAuctionEvent) {
-  if (event.kind !== "bid-accepted") throw new Error("expected a bid-accepted event");
+  if (event.kind !== "bid-accepted") {
+    throw new Error("expected a bid-accepted event");
+  }
   return event.event;
 }

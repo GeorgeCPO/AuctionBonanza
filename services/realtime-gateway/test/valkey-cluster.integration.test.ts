@@ -34,7 +34,9 @@ describe.skipIf(valkeyNodes === undefined)("Valkey cluster", () => {
       const shards = (await client.sendCommand(["CLUSTER", "SHARDS"])) as ShardReply[];
       return shards.map(({ slots, nodes }) => {
         const primary = nodes.find((node) => node.role === "master" || node.role === "primary");
-        if (primary === undefined) throw new Error("Shard has no primary");
+        if (primary === undefined) {
+          throw new Error("Shard has no primary");
+        }
 
         // Slots arrive as a flat list of inclusive [start, end] pairs.
         const slotRanges: [number, number][] = [];
@@ -107,7 +109,9 @@ describe.skipIf(valkeyNodes === undefined)("Valkey cluster", () => {
       for (let auctionId = 1; auctionId < 10_000; auctionId += 1) {
         const channel = `auction:${auctionId}`;
         const slot = Number(await client.sendCommand(["CLUSTER", "KEYSLOT", channel]));
-        if (primary.slotRanges.some(([start, end]) => slot >= start && slot <= end)) return channel;
+        if (primary.slotRanges.some(([start, end]) => slot >= start && slot <= end)) {
+          return channel;
+        }
       }
       throw new Error(`No channel found for ${primary.endpoint}:${primary.port}`);
     } finally {

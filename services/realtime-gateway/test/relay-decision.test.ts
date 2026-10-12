@@ -15,7 +15,9 @@ describe("decideRelay", () => {
     const decision = decideRelay(input);
 
     expect(decision).toMatchObject({ kind: "publish", channel: "auction:42" });
-    if (decision.kind !== "publish") throw new Error("expected a publish");
+    if (decision.kind !== "publish") {
+      throw new Error("expected a publish");
+    }
     expect(JSON.parse(decision.message)).toEqual({
       v: 1,
       eventType: "BidAccepted.v1",
@@ -51,7 +53,9 @@ describe("decideRelay", () => {
     const decision = decideRelay({ ...record("42"), ...override });
 
     expect(decision).toMatchObject({ kind: "skip", reason: "malformed" });
-    if (decision.kind !== "skip") throw new Error("expected a skip");
+    if (decision.kind !== "skip") {
+      throw new Error("expected a skip");
+    }
     expect(decision.detail).toContain(detail);
   });
 });

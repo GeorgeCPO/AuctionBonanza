@@ -44,7 +44,9 @@ export class ValkeyBusPublisher implements BusPublisher {
   }
 
   async close(): Promise<void> {
-    if (!this.connected) return;
+    if (!this.connected) {
+      return;
+    }
     this.connected = false;
     await this.cluster.close();
   }
