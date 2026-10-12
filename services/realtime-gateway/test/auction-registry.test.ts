@@ -17,6 +17,9 @@ class FakeBus implements BusSubscriber {
   readonly listeners = new Map<string, (message: string) => void>();
   readonly subscribed: string[] = [];
   readonly unsubscribed: string[] = [];
+  unsubscribeAttempts = 0;
+  // The next unsubscribes fail, like a connection lost while one is in flight.
+  failUnsubscribes = 0;
   private interruptionListener: () => void = () => {};
   private subscriptionLostListener: (channel: string) => void = () => {};
   private restored: PromiseWithResolvers<void> | undefined;
@@ -27,6 +30,11 @@ class FakeBus implements BusSubscriber {
   }
 
   async unsubscribe(channel: string): Promise<void> {
+    this.unsubscribeAttempts += 1;
+    if (this.failUnsubscribes > 0) {
+      this.failUnsubscribes -= 1;
+      throw new Error("unsubscribe failed");
+    }
     this.listeners.delete(channel);
     this.unsubscribed.push(channel);
   }
@@ -129,6 +137,7 @@ function setup<Source extends LiveStateSource = FakeLiveStates>(
   options: {
     lingerMs?: number;
     maxBufferedEvents?: number;
+    maxWatchedAuctions?: number;
     retryBaseDelayMs?: number;
     liveStates?: Source;
   } = {},
@@ -139,6 +148,7 @@ function setup<Source extends LiveStateSource = FakeLiveStates>(
   const registry = new AuctionRegistry({
     bus,
     liveStates,
+    maxWatchedAuctions: options.maxWatchedAuctions ?? 1_000,
     lingerMs: options.lingerMs ?? 60_000,
     maxBufferedEvents: options.maxBufferedEvents ?? 100,
     retryBackoff: { baseDelayMs: retryBaseDelayMs, maxDelayMs: retryBaseDelayMs * 2 },
@@ -257,6 +267,67 @@ describe("AuctionRegistry", () => {
 
     expect(liveStates.loads).toBe(1);
     expect(registry.stats().resyncs["buffer-overflow"]).toBe(1);
+  });
+
+  it("keeps a scheduled retry when the buffer overflows again, so the read still happens", async () => {
+    const liveStates = new AnsweringLiveStates(new Error("auction-service unavailable"));
+    const { bus, registry, watcher } = setup({
+      liveStates,
+      retryBaseDelayMs: 200,
+      maxBufferedEvents: 2,
+    });
+    registry.watch("42", watcher);
+    await waitFor(() => liveStates.loads === 1, "the first read");
+
+    // The buffer overflows every 50 ms, much more often than the retry delay
+    // (100-200 ms). Each overflow used to replace the retry, so none fired.
+    for (let round = 0; round < 10; round += 1) {
+      for (const version of [2, 3, 4]) {
+        bus.publishBid("42", version);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    expect(liveStates.loads).toBeGreaterThanOrEqual(2);
+    expect(registry.stats().resyncs["buffer-overflow"]).toBeGreaterThanOrEqual(2);
+  });
+
+  it("says whether watching more auctions stays within the limit", async () => {
+    const { liveStates, registry, watcher } = setup({ maxWatchedAuctions: 2 });
+    registry.watch("1", watcher);
+    await waitFor(() => liveStates.loads.length === 1, "the first read");
+
+    expect(registry.hasRoomFor(["1", "2"])).toBe(true);
+    expect(registry.hasRoomFor(["2", "3"])).toBe(false);
+    expect(registry.hasRoomFor(["1"])).toBe(true);
+  });
+
+  it("tries a failed unsubscribe again until the bus accepts it", async () => {
+    const { bus, liveStates, registry, watcher } = setup({ lingerMs: 20, retryBaseDelayMs: 10 });
+    registry.watch("42", watcher);
+    await liveStates.answer(0, found("42", 1));
+    bus.failUnsubscribes = 2;
+
+    registry.unwatch("42", watcher);
+    await waitFor(() => bus.unsubscribed.length === 1, "the unsubscribe to succeed");
+
+    expect(bus.unsubscribeAttempts).toBe(3);
+    expect(bus.listeners.has("auction:42")).toBe(false);
+  });
+
+  it("stops retrying an unsubscribe once the auction is watched again", async () => {
+    const { bus, liveStates, registry, watcher } = setup({ lingerMs: 20, retryBaseDelayMs: 200 });
+    registry.watch("42", watcher);
+    await liveStates.answer(0, found("42", 1));
+    bus.failUnsubscribes = 100;
+    registry.unwatch("42", watcher);
+    await waitFor(() => bus.unsubscribeAttempts === 1, "the first unsubscribe attempt");
+
+    // The auction is watched again before the retry (100-200 ms) fires.
+    registry.watch("42", new RecordingWatcher());
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(bus.unsubscribeAttempts).toBe(1);
   });
 
   it("subscribes again and resyncs when the bus drops a channel's listener", async () => {

@@ -3,13 +3,9 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { Client } from "pg";
+import type { IsolatedDatabase } from "./isolated-database.types.js";
 
 const schemaPath = resolve(import.meta.dirname, "../../../../db/schema.sql");
-
-export interface IsolatedDatabase {
-  url: string;
-  drop(): Promise<void>;
-}
 
 // Creates a throwaway database from the committed schema snapshot, like
 // auction-service's tests (copied, since packages share no test code). An

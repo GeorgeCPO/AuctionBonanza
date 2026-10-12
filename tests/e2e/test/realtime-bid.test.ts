@@ -3,7 +3,8 @@ import { randomInt, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { createIsolatedDatabase, type IsolatedDatabase } from "./support/isolated-database.js";
+import { createIsolatedDatabase } from "./support/isolated-database.js";
+import type { IsolatedDatabase } from "./support/isolated-database.types.js";
 import { TestTopic } from "./support/kafka.js";
 import {
   auctionServiceRoot,
@@ -11,11 +12,11 @@ import {
   freePort,
   gatewayRoot,
   startServiceProcess,
-  type CompiledService,
-  type ServiceProcess,
 } from "./support/services.js";
+import type { CompiledService, ServiceProcess } from "./support/services.types.js";
 import { SseTestClient } from "./support/sse-client.js";
-import { startTestIssuer, type TestIssuer } from "./support/test-issuer.js";
+import { startTestIssuer } from "./support/test-issuer.js";
+import type { TestIssuer } from "./support/test-issuer.types.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const kafkaBrokers = process.env.TEST_KAFKA_BROKERS;

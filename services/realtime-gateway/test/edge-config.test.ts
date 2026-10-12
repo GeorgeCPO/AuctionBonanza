@@ -15,6 +15,8 @@ describe("parseEdgeConfig", () => {
       valkeyConnectTimeoutMs: 2_000,
       auctionServiceUrl: "http://localhost:3002",
       maxAuctionsPerStream: 50,
+      maxConnections: 10_000,
+      maxWatchedAuctions: 100_000,
       heartbeatIntervalMs: 15_000,
       lingerMs: 30_000,
       liveStateBatchDelayMs: 5,
@@ -42,9 +44,15 @@ describe("parseEdgeConfig", () => {
       "/maxAuctionsPerStream",
     ],
     [
-      "a heartbeat slower than a load balancer's idle timeout",
-      { ...valkey, EDGE_HEARTBEAT_INTERVAL_MS: "61000" },
+      "a heartbeat as slow as a load balancer's idle timeout",
+      { ...valkey, EDGE_HEARTBEAT_INTERVAL_MS: "60000" },
       "/heartbeatIntervalMs",
+    ],
+    ["no room for any connection", { ...valkey, EDGE_MAX_CONNECTIONS: "0" }, "/maxConnections"],
+    [
+      "no room for any watched auction",
+      { ...valkey, EDGE_MAX_WATCHED_AUCTIONS: "0" },
+      "/maxWatchedAuctions",
     ],
     ["a non-numeric linger", { ...valkey, EDGE_LINGER_MS: "soon" }, "/lingerMs"],
     [

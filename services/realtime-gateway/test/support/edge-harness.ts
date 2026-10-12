@@ -10,7 +10,7 @@ import {
 import type { AddressInfo } from "node:net";
 
 import type { BidAcceptedV1 } from "@auction-bonanza/contracts";
-import { pino, type Logger } from "pino";
+import { pino } from "pino";
 import { createClient } from "redis";
 
 import { auctionChannel, serializeAuctionEvent } from "../../src/bus/bus.js";
@@ -24,6 +24,7 @@ import {
   type AuctionLiveState,
 } from "../../src/edge/live-states.js";
 import { waitFor } from "./relay-harness.js";
+import type { Gate, SseMessage, EdgeRun, StartEdgeOptions } from "./edge-harness.types.js";
 
 // Auction ids far apart from other test files, which share the Valkey
 // cluster and its channels.
@@ -94,14 +95,6 @@ export class TestBus {
   }
 }
 
-// Holds a request until the test opens it.
-export interface Gate {
-  // Resolves when a request reached the gate.
-  entered: Promise<void>;
-  pass(): Promise<void>;
-  open(): void;
-}
-
 export function createGate(): Gate {
   const entered = Promise.withResolvers<void>();
   const opened = Promise.withResolvers<void>();
@@ -162,11 +155,6 @@ export class LiveStateStub {
     this.server.closeAllConnections();
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
-}
-
-export interface SseMessage {
-  event: string;
-  data: Record<string, unknown>;
 }
 
 // Reads an SSE response the way a browser's EventSource would, keeping every
@@ -241,22 +229,6 @@ export class SseTestClient {
   }
 }
 
-export interface EdgeRun {
-  url: string;
-  registry: AuctionRegistry;
-  clientName: string;
-  stop(): Promise<void>;
-}
-
-export interface StartEdgeOptions {
-  valkeyNodes: readonly string[];
-  auctionServiceUrl: string;
-  lingerMs?: number;
-  heartbeatIntervalMs?: number;
-  liveStateBatchDelayMs?: number;
-  logger?: Logger;
-}
-
 // Runs the edge in this process, wired like edge.main.ts, so tests can read
 // its registry's counters.
 export async function startEdge(options: StartEdgeOptions): Promise<EdgeRun> {
@@ -279,6 +251,7 @@ export async function startEdge(options: StartEdgeOptions): Promise<EdgeRun> {
       batchDelayMs: options.liveStateBatchDelayMs ?? 5,
       maxConcurrentRequests: 4,
     }),
+    maxWatchedAuctions: 100_000,
     lingerMs: options.lingerMs ?? 30_000,
     maxBufferedEvents: 1_000,
     retryBackoff: { baseDelayMs: 50, maxDelayMs: 200 },
@@ -287,6 +260,7 @@ export async function startEdge(options: StartEdgeOptions): Promise<EdgeRun> {
   const server = new EdgeServer({
     registry,
     maxAuctionsPerStream: 50,
+    maxConnections: 10_000,
     heartbeatIntervalMs: options.heartbeatIntervalMs ?? 15_000,
     maxBufferedBytesPerConnection: 1024 * 1024,
     logger,

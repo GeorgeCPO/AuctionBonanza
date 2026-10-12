@@ -72,7 +72,13 @@ export class EdgeServer {
   }
 
   private handle(request: IncomingMessage, response: ServerResponse): void {
-    const url = new URL(request.url ?? "/", "http://edge");
+    const url = this.parseUrl(request);
+    if (url === undefined) {
+      return this.json(response, 400, {
+        code: "INVALID_REQUEST",
+        message: "request target is not valid",
+      });
+    }
     if (url.pathname === "/health") {
       if (request.method !== "GET") {
         return this.reply(response, 405, "METHOD_NOT_ALLOWED");
@@ -89,6 +95,12 @@ export class EdgeServer {
     const query = parseStreamQuery(url.searchParams, this.options.maxAuctionsPerStream);
     if (query.kind === "invalid") {
       return this.json(response, 400, { code: "INVALID_REQUEST", message: query.message });
+    }
+    if (this.connections.size >= this.options.maxConnections) {
+      return this.reply(response, 503, "OVER_CAPACITY");
+    }
+    if (!this.options.registry.hasRoomFor(query.auctionIds)) {
+      return this.reply(response, 503, "OVER_CAPACITY");
     }
     this.openStream(response, query.auctionIds);
   }
@@ -121,6 +133,16 @@ export class EdgeServer {
         break;
       }
       registry.watch(auctionId, connection);
+    }
+  }
+
+  // The request target is client input, and `new URL` throws on some valid
+  // ones (for example "//"). An exception here would end the process.
+  private parseUrl(request: IncomingMessage): URL | undefined {
+    try {
+      return new URL(request.url ?? "/", "http://edge");
+    } catch {
+      return undefined;
     }
   }
 

@@ -10,8 +10,18 @@ import type { AuctionEventEnvelope, BusAuctionEvent } from "./bus.types.js";
 
 export const BUS_ENVELOPE_VERSION = 1;
 
+const AUCTION_CHANNEL_PREFIX = "auction:";
+
 export function auctionChannel(auctionId: string): string {
-  return `auction:${auctionId}`;
+  return `${AUCTION_CHANNEL_PREFIX}${auctionId}`;
+}
+
+// The inverse of auctionChannel: the auction id of a channel, or undefined
+// for a channel that does not belong to an auction.
+export function auctionIdOfChannel(channel: string): string | undefined {
+  return channel.startsWith(AUCTION_CHANNEL_PREFIX)
+    ? channel.slice(AUCTION_CHANNEL_PREFIX.length)
+    : undefined;
 }
 
 export function serializeAuctionEvent(eventType: string, event: unknown): string {

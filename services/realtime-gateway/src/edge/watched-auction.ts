@@ -70,12 +70,25 @@ export class WatchedAuction {
     this.lingerTimer = setTimeout(onExpire, durationMs);
   }
 
-  // Starts a new sync attempt and returns its number. Any retry scheduled by
-  // an earlier attempt is cancelled.
-  beginAttempt(): number {
+  // The number of the current sync attempt.
+  get currentAttempt(): number {
+    return this.generation;
+  }
+
+  // True while a retry is scheduled and has not fired yet.
+  get hasPendingRetry(): boolean {
+    return this.retryTimer !== undefined;
+  }
+
+  // Starts a new sync attempt and returns its number. A retry scheduled by an
+  // earlier attempt is cancelled, unless the caller keeps it: a retry that
+  // runs the current attempt when it fires.
+  beginAttempt(keepPendingRetry = false): number {
     this.generation += 1;
-    clearTimeout(this.retryTimer);
-    this.retryTimer = undefined;
+    if (!keepPendingRetry) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = undefined;
+    }
     return this.generation;
   }
 
@@ -98,7 +111,10 @@ export class WatchedAuction {
 
   scheduleRetry(delayMs: number, run: () => void): void {
     clearTimeout(this.retryTimer);
-    this.retryTimer = setTimeout(run, delayMs);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      run();
+    }, delayMs);
   }
 
   // Runs `open` to subscribe, unless a subscription is already open or being

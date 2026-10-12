@@ -573,7 +573,15 @@ validated configuration (`.env.edge.example`).
     count as attempts, and the count resets only when the auction is live
     again. Without that, a read that lags the bus (for example, a future read
     replica) would be repeated in a tight loop. A gap found while live is
-    still repaired at once.
+    still repaired at once. A retry that is already scheduled keeps its
+    deadline when the buffer overflows again: replacing it every time would
+    push the read back for as long as events keep arriving faster than the
+    retry delay.
+  - A failed unsubscribe is tried again with the same backoff, until the bus
+    accepts it, the auction is watched again, or the registry closes.
+    node-redis drops a channel's listener only when the unsubscribe succeeds,
+    so giving up would leave the edge receiving every event of an auction
+    nobody watches.
 
 - **Live-state reads** (`live-states.ts`). Loads requested within 5 ms are sent
   together, at most 100 ids per request and 4 requests in flight. A load
@@ -592,6 +600,12 @@ validated configuration (`.env.edge.example`).
   moved channel (`sharded-channel-moved-error`), it has already removed the
   channel's listener, so the registry subscribes that auction again and
   resyncs it.
+- **Limits.** The stream endpoint is public, so an edge bounds what clients
+  can make it hold: `EDGE_MAX_CONNECTIONS` streams (default 10,000) and
+  `EDGE_MAX_WATCHED_AUCTIONS` auctions (default 100,000, counting only
+  auctions not already watched). A request beyond either gets `503`
+  (`OVER_CAPACITY`) before a stream starts. A request target that is not a
+  valid URL gets `400`.
 - **Slow clients.** A connection whose unwritten bytes exceed 1 MiB is closed;
   the client reconnects and starts from snapshots.
 - **Counters.** The registry counts buffered, applied, and dropped events,
@@ -657,7 +671,11 @@ Accept: text/event-stream
 
 - Public, like auction reads today. At most 50 auctions per connection (a
   configurable limit). Malformed or too many ids return `400` before the
-  stream starts.
+  stream starts, and an edge at its connection or auction limit returns `503`.
+- The edge sets no CORS headers: a browser must reach it from the same origin
+  as the page, for example through the load balancer or reverse proxy that
+  serves both. Serving other origins would need CORS support on the edge, or
+  headers added by that proxy.
 - One connection carries every subscription, as `ARCHITECTURE.md` requires.
   **Changing the set means opening a new connection.** A separate "add a
   subscription" request would have to reach the same edge as the stream, which

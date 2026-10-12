@@ -9,8 +9,8 @@ import {
   SseTestClient,
   startEdge,
   TestBus,
-  type EdgeRun,
 } from "./support/edge-harness.js";
+import type { EdgeRun } from "./support/edge-harness.types.js";
 import { waitFor } from "./support/relay-harness.js";
 
 const valkeyNodes = process.env.TEST_VALKEY_NODES?.split(",");
