@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "pnpm --filter @auction-bonanza/contracts --filter @auction-bonanza/http-routing --filter @auction-bonanza/access-auth build && vitest run",
+    "test:e2e": "pnpm --filter @auction-bonanza/contracts --filter @auction-bonanza/http-routing --filter @auction-bonanza/access-auth build && vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @auction-bonanza/http-routing build && pnpm --filter @auction-bonanza/access-auth build && tsc -p tsconfig.build.json",
+    "build:deps": "pnpm --filter @auction-bonanza/access-auth build",
+    "build": "pnpm --filter @auction-bonanza/http-routing build && pnpm run build:deps && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "start:local": "node --env-file-if-exists=.env dist/index.js",
-    "test": "pnpm --filter @auction-bonanza/access-auth build && vitest run",
+    "test:unit": "pnpm run build:deps && vitest run -c vitest.unit.config.ts",
+    "test:integration": "pnpm run build:deps && vitest run -c vitest.integration.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

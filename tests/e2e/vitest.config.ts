@@ -1,15 +1,16 @@
 import { defineConfig } from "vitest/config";
 
-// The suite skips itself when these are unset, which keeps local runs without
-// infrastructure green. In CI a skip would hide untested behavior, so a
-// missing variable fails the run before any test starts.
-const integrationVariables = ["TEST_DATABASE_URL", "TEST_KAFKA_BROKERS", "TEST_VALKEY_NODES"];
+// The suite needs the services from the root docker-compose.yml. A missing
+// variable stops the run here instead of letting the suite skip itself, so a
+// green run means the suite ran.
+const requiredVariables = ["TEST_DATABASE_URL", "TEST_KAFKA_BROKERS", "TEST_VALKEY_NODES"];
 
-if (process.env.CI === "true") {
-  const missing = integrationVariables.filter((name) => process.env[name] === undefined);
-  if (missing.length > 0) {
-    throw new Error(`CI=true but end-to-end tests would be skipped; set ${missing.join(", ")}`);
-  }
+const missing = requiredVariables.filter((name) => process.env[name] === undefined);
+if (missing.length > 0) {
+  throw new Error(
+    `End-to-end tests need ${missing.join(", ")}. Start the Compose stack and run ` +
+      "`pnpm test:e2e:local`, or set them yourself (see docs/TESTING.md).",
+  );
 }
 
 export default defineConfig({
