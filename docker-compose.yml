@@ -35,8 +35,10 @@ x-valkey-node: &valkey-node
     - /data
 
 # One-shot cluster formation, shared by the clusters below. The nodes to form
-# come from the NODES environment variable of each service. If they already
-# form one healthy cluster covering every slot, it changes nothing. Otherwise
+# come from the NODES environment variable of each service, and REPLICAS says
+# how many replicas each primary gets (default 0; valkey-cli assigns the
+# first nodes in the list as primaries). If they already form one healthy
+# cluster covering every slot, it changes nothing. Otherwise
 # (first start, or a node restarted blank) it resets all of them and creates
 # the cluster again. That discards subscriptions, which clients must survive
 # anyway.
@@ -48,11 +50,12 @@ x-valkey-init: &valkey-init
       set -eu
       nodes="$$NODES"
       first="$${nodes%% *}"
+      expected="$$(echo "$$nodes" | wc -w | tr -d ' ')"
       healthy=true
       for node in $$nodes; do
         info="$$(valkey-cli -h "$${node%:*}" -p "$${node#*:}" cluster info)"
         echo "$$info" | grep -q '^cluster_state:ok' || healthy=false
-        echo "$$info" | grep -q '^cluster_known_nodes:3' || healthy=false
+        echo "$$info" | grep -q "^cluster_known_nodes:$$expected" || healthy=false
         echo "$$info" | grep -q '^cluster_slots_assigned:16384' || healthy=false
       done
       if [ "$$healthy" = true ]; then
@@ -67,7 +70,7 @@ x-valkey-init: &valkey-init
           # valkey-cli --cluster create expects addresses, not hostnames.
           addresses="$$addresses $$(getent hosts "$$host" | cut -d ' ' -f 1):$$port"
         done
-        valkey-cli --cluster create $$addresses --cluster-replicas 0 --cluster-yes
+        valkey-cli --cluster create $$addresses --cluster-replicas "$${REPLICAS:-0}" --cluster-yes
       fi
       until valkey-cli -h "$${first%:*}" -p "$${first#*:}" cluster info | grep -q '^cluster_state:ok'; do
         sleep 1
@@ -199,10 +202,10 @@ services:
       valkey-3:
         condition: service_healthy
 
-  # A second cluster for tests that change the topology (moving a slot, and
-  # later failing over a primary). Only those tests connect to it, so what they
-  # do cannot disturb the shared cluster or its tests. Same image and settings;
-  # three primaries, no replicas yet.
+  # A second cluster for tests that change the topology (moving a slot, failing
+  # over a primary). Only those tests connect to it, so what they do cannot
+  # disturb the shared cluster or its tests. Same image and settings; three
+  # primaries, each with one replica.
   valkey-topology-1:
     <<: *valkey-node
     environment:
@@ -224,16 +227,47 @@ services:
     ports:
       - "7103:7103"
 
+  # Replicas of the three topology primaries, for failover tests. valkey-cli
+  # makes the first three nodes of NODES the primaries, so these must stay at
+  # the end of the list.
+  valkey-topology-4:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7104
+    ports:
+      - "7104:7104"
+
+  valkey-topology-5:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7105
+    ports:
+      - "7105:7105"
+
+  valkey-topology-6:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7106
+    ports:
+      - "7106:7106"
+
   valkey-topology-init:
     <<: *valkey-init
     environment:
-      NODES: "valkey-topology-1:7101 valkey-topology-2:7102 valkey-topology-3:7103"
+      NODES: "valkey-topology-1:7101 valkey-topology-2:7102 valkey-topology-3:7103 valkey-topology-4:7104 valkey-topology-5:7105 valkey-topology-6:7106"
+      REPLICAS: "1"
     depends_on:
       valkey-topology-1:
         condition: service_healthy
       valkey-topology-2:
         condition: service_healthy
       valkey-topology-3:
+        condition: service_healthy
+      valkey-topology-4:
+        condition: service_healthy
+      valkey-topology-5:
+        condition: service_healthy
+      valkey-topology-6:
         condition: service_healthy
 
 volumes:

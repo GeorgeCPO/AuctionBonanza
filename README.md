@@ -92,11 +92,12 @@ with `docker compose up valkey-init`, and inspect the cluster with:
 docker compose exec valkey-1 valkey-cli -p 7001 cluster shards
 ```
 
-A second cluster, `valkey-topology-1`–`3` on `localhost:7101`–`7103` and formed
+A second cluster, `valkey-topology-1`–`6` on `localhost:7101`–`7106` and formed
 by `valkey-topology-init`, is for tests that change the topology, such as
 moving a hash slot to another primary. Nothing else connects to it, so what
 those tests do cannot break a test that shares the first cluster. It has the
-same image and settings: three primaries, no replicas yet.
+same image and settings: three primaries (7101–7103) and one replica each
+(7104–7106), so tests can also fail a primary over.
 
 Integration tests are skipped unless their infrastructure is configured:
 
@@ -154,7 +155,8 @@ To reproduce the CI run locally (port `19092` must be free):
 
 ```sh
 docker compose up --detach --wait postgres kafka valkey-1 valkey-2 valkey-3 \
-  valkey-topology-1 valkey-topology-2 valkey-topology-3
+  valkey-topology-1 valkey-topology-2 valkey-topology-3 \
+  valkey-topology-4 valkey-topology-5 valkey-topology-6
 docker compose up kafka-init valkey-init valkey-topology-init
 PATH="$PWD/scripts/compose-bin:$PATH" pnpm db:migrate
 git diff --exit-code --ignore-matching-lines='^-- Dumped (from|by) ' -- db/schema.sql

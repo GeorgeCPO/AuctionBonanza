@@ -27,7 +27,7 @@ Implemented so far:
   a gap or an interrupted subscription (a lost connection, a moved slot), and
   unsubscribed 30 s after their last client leaves. Its known gaps (slot moves
   repaired up to one check interval late, one unavailable shard stalling the
-  whole edge, failover not yet exercised, no conflation) are listed under "Edge implementation
+  whole edge, no conflation) are listed under "Edge implementation
   status" in the design.
 - `src/bus/`, the bus contract (channel names, envelopes, and their parsing),
   the Valkey publisher, and the Valkey subscriber (`valkey-bus-subscriber.ts`), which
