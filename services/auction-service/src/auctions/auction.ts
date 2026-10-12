@@ -13,6 +13,9 @@ export interface Auction {
   version: string;
   cancelledAt: Date | null;
   closedAt: Date | null;
+  // Set only on a closed auction that sold. A closed auction without one
+  // closed unsold.
+  winningBidId: string | null;
   createdAt: Date;
   updatedAt: Date;
   phase: AuctionPhase;
@@ -31,6 +34,7 @@ export interface AuctionJson {
   version: string;
   cancelledAt: string | null;
   closedAt: string | null;
+  winningBidId: string | null;
   createdAt: string;
   updatedAt: string;
   phase: AuctionPhase;

@@ -1,4 +1,9 @@
-import { BID_ACCEPTED_V1_EVENT_TYPE, parseBidAcceptedV1 } from "@auction-bonanza/contracts";
+import {
+  AUCTION_CLOSED_V1_EVENT_TYPE,
+  BID_ACCEPTED_V1_EVENT_TYPE,
+  parseAuctionClosedV1,
+  parseBidAcceptedV1,
+} from "@auction-bonanza/contracts";
 
 import { auctionChannel, serializeAuctionEvent } from "../bus/bus.js";
 
@@ -35,6 +40,7 @@ interface AuctionEvent {
 // added to the relay before producers emit it.
 const eventParsers: Readonly<Record<string, (value: unknown) => AuctionEvent>> = {
   [BID_ACCEPTED_V1_EVENT_TYPE]: parseBidAcceptedV1,
+  [AUCTION_CLOSED_V1_EVENT_TYPE]: parseAuctionClosedV1,
 };
 
 // Decides what the relay does with one record. Pure, so every rejection rule

@@ -1,6 +1,8 @@
-import { parseBidAcceptedV1 } from "@auction-bonanza/contracts";
+import { parseAuctionClosedV1, parseBidAcceptedV1 } from "@auction-bonanza/contracts";
 import { describe, expect, it } from "vitest";
 
+import { PostgresFinalizationRepository } from "../src/auctions/finalization.repository.js";
+import { wrapPool } from "../src/database.js";
 import { OUTBOX_LOG_MESSAGES } from "../src/outbox/outbox.publisher.js";
 import { eventIdOf, messagesFor } from "./support/kafka.js";
 import {
@@ -22,6 +24,34 @@ describe.skipIf(infrastructureMissing)(
   { timeout: 60_000 },
   () => {
     const harness = OutboxPublisherHarness.register();
+
+    it("publishes the AuctionClosed.v1 event after the bid events of its auction", async () => {
+      const { fixtures, topics, topic, pool } = harness;
+      const auctionId = await fixtures.openAuction(harness.ownerId);
+      const bidEventId = await fixtures.acceptBid(auctionId, harness.bidderId);
+      await fixtures.expire(auctionId);
+      await new PostgresFinalizationRepository(wrapPool(pool)).finalizeNextDue();
+      const closedEventId = (
+        await pool.query<{ event_id: string }>(
+          "SELECT event_id::text FROM outbox_events WHERE auction_id = $1 AND event_type = 'AuctionClosed.v1'",
+          [auctionId],
+        )
+      ).rows[0]!.event_id;
+      const outboxPublisher = harness.publisher();
+
+      await outboxPublisher.publishBatch();
+      await outboxPublisher.publishBatch();
+
+      const messages = await topics.readAll(topic);
+      expect(messages.map(eventIdOf)).toEqual([bidEventId, closedEventId]);
+      expect(messages[1]!.key).toBe(auctionId);
+      expect(messages[1]!.headers["event-type"]).toBe("AuctionClosed.v1");
+      expect(parseAuctionClosedV1(JSON.parse(messages[1]!.value!))).toMatchObject({
+        auctionId,
+        winnerId: harness.bidderId,
+        finalAmountMinor: "1000",
+      });
+    });
 
     it("publishes the stored BidAccepted.v1 payload keyed by auction ID after the acknowledgement", async () => {
       const { fixtures, topics, topic } = harness;

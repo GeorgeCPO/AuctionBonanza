@@ -25,6 +25,36 @@ describe("decideRelay", () => {
     });
   });
 
+  it("publishes an AuctionClosed.v1 event, sold or unsold, to its auction's channel", () => {
+    const closed = {
+      eventId: "bb106586-ded1-4eca-9a75-1a38c170499f",
+      eventType: "AuctionClosed.v1",
+      occurredAt: "2026-10-12T09:15:30.123456Z",
+      auctionId: "42",
+      auctionVersion: "8",
+      currencyCode: "USD",
+      winningBidId: null,
+      winnerId: null,
+      finalAmountMinor: null,
+    };
+
+    const decision = decideRelay({
+      key: "42",
+      value: JSON.stringify(closed),
+      eventType: "AuctionClosed.v1",
+    });
+
+    expect(decision).toMatchObject({ kind: "publish", channel: "auction:42" });
+    if (decision.kind !== "publish") {
+      throw new Error("expected a publish");
+    }
+    expect(JSON.parse(decision.message)).toEqual({
+      v: 1,
+      eventType: "AuctionClosed.v1",
+      event: closed,
+    });
+  });
+
   it("skips an event type without a relay contract", () => {
     expect(decideRelay({ ...record(), eventType: "AuctionRenamed.v9" })).toEqual({
       kind: "skip",
