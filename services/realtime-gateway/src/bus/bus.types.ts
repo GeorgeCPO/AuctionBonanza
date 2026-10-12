@@ -61,6 +61,10 @@ export interface ValkeyBusSubscriberOptions {
   // connections.
   clientName: string;
   connectTimeoutMs: number;
+  // How often CLUSTER SHARDS is compared with the owners the watched channels
+  // were subscribed at. It bounds how long a slot move that node-redis
+  // followed silently goes unreported.
+  topologyCheckIntervalMs: number;
   logger: Logger;
 }
 

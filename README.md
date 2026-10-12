@@ -34,7 +34,7 @@ resulting `pnpm-lock.yaml` change.
 ```sh
 pnpm install
 pnpm check
-docker compose up -d postgres kafka kafka-init valkey-init
+docker compose up -d postgres kafka kafka-init valkey-init valkey-topology-init
 cp .env.example .env
 pnpm db:migrate
 pnpm auth:keys:local local-2026-09
@@ -92,6 +92,13 @@ with `docker compose up valkey-init`, and inspect the cluster with:
 docker compose exec valkey-1 valkey-cli -p 7001 cluster shards
 ```
 
+A second cluster, `valkey-topology-1`–`6` on `localhost:7101`–`7106` and formed
+by `valkey-topology-init`, is for tests that change the topology, such as
+moving a hash slot to another primary. Nothing else connects to it, so what
+those tests do cannot break a test that shares the first cluster. It has the
+same image and settings: three primaries (7101–7103) and one replica each
+(7104–7106), so tests can also fail a primary over.
+
 Integration tests are skipped unless their infrastructure is configured:
 
 ```sh
@@ -102,6 +109,7 @@ pnpm --filter @auction-bonanza/auction-service test
 
 TEST_KAFKA_BROKERS=localhost:9092 \
 TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
+TEST_VALKEY_TOPOLOGY_NODES=localhost:7101,localhost:7102,localhost:7103 \
 pnpm --filter @auction-bonanza/realtime-gateway test
 
 TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
@@ -126,9 +134,10 @@ test.
 GitHub Actions (`.github/workflows/ci.yml`) runs one job on every pull request
 and on pushes to `master`:
 
-1. Starts `postgres`, `kafka`, and the three Valkey nodes from the root
-   `docker-compose.yml`, waits for their health checks, and requires the
-   one-shot `kafka-init` and `valkey-init` to exit with 0.
+1. Starts `postgres`, `kafka`, and the six Valkey nodes (the shared cluster
+   and the topology cluster) from the root `docker-compose.yml`, waits for
+   their health checks, and requires the one-shot `kafka-init`, `valkey-init`
+   and `valkey-topology-init` to exit with 0.
 2. Installs with `pnpm install --frozen-lockfile` and checks that the native
    Kafka client (librdkafka) loads.
 3. Runs `pnpm db:migrate`, which regenerates `db/schema.sql` with `pg_dump`
@@ -145,8 +154,10 @@ instead fail before running any test if a variable they need is missing.
 To reproduce the CI run locally (port `19092` must be free):
 
 ```sh
-docker compose up --detach --wait postgres kafka valkey-1 valkey-2 valkey-3
-docker compose up kafka-init valkey-init
+docker compose up --detach --wait postgres kafka valkey-1 valkey-2 valkey-3 \
+  valkey-topology-1 valkey-topology-2 valkey-topology-3 \
+  valkey-topology-4 valkey-topology-5 valkey-topology-6
+docker compose up kafka-init valkey-init valkey-topology-init
 PATH="$PWD/scripts/compose-bin:$PATH" pnpm db:migrate
 git diff --exit-code --ignore-matching-lines='^-- Dumped (from|by) ' -- db/schema.sql
 CI=true \
@@ -154,6 +165,7 @@ TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
 TEST_KAFKA_BROKERS=localhost:9092 \
 TEST_KAFKA_FAULT_INJECTION_UPSTREAM=localhost:19093 \
 TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
+TEST_VALKEY_TOPOLOGY_NODES=localhost:7101,localhost:7102,localhost:7103 \
 pnpm check
 ```
 

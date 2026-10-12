@@ -26,6 +26,7 @@ describe.skipIf(valkeyNodes === undefined)("ValkeyBusSubscriber", { timeout: 30_
       nodes: valkeyNodes!,
       clientName,
       connectTimeoutMs: 2_000,
+      topologyCheckIntervalMs: 60_000,
       logger,
     });
     await subscriber.connect();

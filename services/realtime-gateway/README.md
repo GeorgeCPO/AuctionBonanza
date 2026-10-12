@@ -24,12 +24,15 @@ Implemented so far:
   15 s. Auctions are
   shared by every client of the process: subscribed on first use, read from
   `auction-service` in batches, kept in contiguous version order, resynced on
-  a gap or a lost Valkey connection, and unsubscribed 30 s after their last
-  client leaves. Its known gaps (slot moves and failovers through
-  node-redis's cluster client, one unavailable shard stalling the whole edge,
-  no conflation) are listed under "Edge implementation status" in the design.
+  a gap or an interrupted subscription (a lost connection, a moved slot), and
+  unsubscribed 30 s after their last client leaves. Its known gaps (slot moves
+  repaired up to one check interval late, one unavailable shard stalling the
+  whole edge, no conflation) are listed under "Edge implementation
+  status" in the design.
 - `src/bus/`, the bus contract (channel names, envelopes, and their parsing),
-  the Valkey publisher, and the Valkey subscriber.
+  the Valkey publisher, and the Valkey subscriber (`valkey-bus-subscriber.ts`), which
+  adds a periodic `CLUSTER SHARDS` check (`slot-map.ts`) to node-redis's
+  cluster client.
 
 `src/index.ts` is still a placeholder.
 
@@ -44,13 +47,15 @@ In `src/bus/` and `src/edge/`, a module's types live next to it in
 from a TypeBox schema, such as `EdgeConfig` or `AuctionLiveState`, stays in the
 file that defines the schema.
 
-Integration tests need Kafka and the Valkey cluster from the root
-`docker-compose.yml`. Live states come from a stub of `auction-service`; the
+Integration tests need Kafka and the two Valkey clusters from the root
+`docker-compose.yml`: the shared one, and the topology cluster that only tests
+which move slots or fail over primaries use. Live states come from a stub of `auction-service`; the
 path through the real one is covered by the root end-to-end suite,
 `tests/e2e`.
 
 ```sh
 TEST_KAFKA_BROKERS=localhost:9092 \
 TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
+TEST_VALKEY_TOPOLOGY_NODES=localhost:7101,localhost:7102,localhost:7103 \
 pnpm --filter @auction-bonanza/realtime-gateway test
 ```

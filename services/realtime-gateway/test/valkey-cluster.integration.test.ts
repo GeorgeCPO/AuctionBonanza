@@ -3,19 +3,14 @@ import { randomUUID } from "node:crypto";
 import { createClient, createCluster } from "redis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { ClusterShardReply } from "../src/bus/slot-map.types.js";
+
 // The edge's shard subscriber depends on three properties of the Compose
 // cluster, checked here from the host the way the gateway will use it:
 // CLUSTER SHARDS lists every primary with an endpoint the host can reach,
 // the primaries cover every slot, and a sharded message published through
 // the cluster client reaches a subscriber connected to the owning primary.
 const valkeyNodes = process.env.TEST_VALKEY_NODES?.split(",");
-
-// node-redis 6 speaks RESP3 by default, so CLUSTER SHARDS maps arrive as
-// plain objects.
-interface ShardReply {
-  slots: number[];
-  nodes: { endpoint: string; port: number; role: string }[];
-}
 
 interface Primary {
   endpoint: string;
@@ -31,7 +26,7 @@ describe.skipIf(valkeyNodes === undefined)("Valkey cluster", () => {
     const client = createClient({ url: `redis://${valkeyNodes![0]}` });
     await client.connect();
     try {
-      const shards = (await client.sendCommand(["CLUSTER", "SHARDS"])) as ShardReply[];
+      const shards = (await client.sendCommand(["CLUSTER", "SHARDS"])) as ClusterShardReply[];
       return shards.map(({ slots, nodes }) => {
         const primary = nodes.find((node) => node.role === "master" || node.role === "primary");
         if (primary === undefined) {
@@ -42,6 +37,9 @@ describe.skipIf(valkeyNodes === undefined)("Valkey cluster", () => {
         const slotRanges: [number, number][] = [];
         for (let index = 0; index + 1 < slots.length; index += 2) {
           slotRanges.push([slots[index]!, slots[index + 1]!]);
+        }
+        if (primary.endpoint === undefined || primary.port === undefined) {
+          throw new Error("Primary has no endpoint or port");
         }
         return { endpoint: primary.endpoint, port: primary.port, slotRanges };
       });

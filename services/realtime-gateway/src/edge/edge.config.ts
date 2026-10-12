@@ -18,6 +18,9 @@ const edgeConfigSchema = Type.Object(
     port: Type.Integer({ minimum: 0, maximum: 65_535 }),
     valkeyNodes: hostPortList(),
     valkeyConnectTimeoutMs: Type.Integer({ minimum: 100, maximum: 60_000 }),
+    // How often the edge compares CLUSTER SHARDS with its subscriptions. It
+    // bounds how long a slot move that no push reported goes unnoticed.
+    topologyCheckIntervalMs: Type.Integer({ minimum: 100, maximum: 600_000 }),
     auctionServiceUrl: Type.String({ pattern: "^https?://[^\\s]+$" }),
     maxAuctionsPerStream: Type.Integer({ minimum: 1, maximum: 100 }),
     // Streams and watched auctions at once on this edge. The endpoint is
@@ -54,6 +57,7 @@ export function parseEdgeConfig(
     port: Number(environment.PORT ?? "3003"),
     valkeyNodes: splitList(environment.VALKEY_NODES ?? ""),
     valkeyConnectTimeoutMs: Number(environment.VALKEY_CONNECT_TIMEOUT_MS ?? "2000"),
+    topologyCheckIntervalMs: Number(environment.EDGE_TOPOLOGY_CHECK_INTERVAL_MS ?? "5000"),
     auctionServiceUrl: environment.AUCTION_SERVICE_URL ?? "http://localhost:3002",
     maxAuctionsPerStream: Number(environment.EDGE_MAX_AUCTIONS_PER_STREAM ?? "50"),
     maxConnections: Number(environment.EDGE_MAX_CONNECTIONS ?? "10000"),

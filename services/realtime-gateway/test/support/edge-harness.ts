@@ -131,7 +131,13 @@ export class LiveStateStub {
         const missingIds = ids.filter((id) => !this.states.has(id));
         await this.afterRead(ids);
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ items, missingIds, observedAt: new Date().toISOString() }));
+        response.end(
+          JSON.stringify({
+            items,
+            missingIds,
+            observedAt: new Date().toISOString(),
+          }),
+        );
       })();
     });
   }
@@ -222,7 +228,10 @@ export class SseTestClient {
         }
       }
       if (data !== undefined) {
-        this.messages.push({ event, data: JSON.parse(data) as Record<string, unknown> });
+        this.messages.push({
+          event,
+          data: JSON.parse(data) as Record<string, unknown>,
+        });
       }
       end = this.pending.indexOf("\n\n");
     }
@@ -238,6 +247,9 @@ export async function startEdge(options: StartEdgeOptions): Promise<EdgeRun> {
     nodes: options.valkeyNodes,
     clientName,
     connectTimeoutMs: 2_000,
+    // Long, so that unless a test asks for it, only the pushes of the
+    // servers and node-redis can reveal a move.
+    topologyCheckIntervalMs: options.topologyCheckIntervalMs ?? 60_000,
     logger,
   });
   await bus.connect();
