@@ -1,7 +1,7 @@
 \restrict dbmate
 
 -- Dumped from database version 18.6 (Debian 18.6-1.pgdg12+2)
--- Dumped by pg_dump version 18.1 (Postgres.app)
+-- Dumped by pg_dump version 18.6 (Debian 18.6-1.pgdg12+2)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -115,6 +115,33 @@ END;
 $$;
 
 
+--
+-- Name: auction_require_winner_on_close(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.auction_require_winner_on_close() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.closed_at IS NULL AND NEW.closed_at IS NOT NULL THEN
+    IF NEW.winning_bid_id IS DISTINCT FROM NEW.leading_bid_id THEN
+      RAISE EXCEPTION 'auction % must close with its leading bid % as winner, not %',
+        NEW.id, NEW.leading_bid_id, NEW.winning_bid_id
+        USING ERRCODE = 'check_violation',
+              CONSTRAINT = 'auctions_winner_is_leading_bid';
+    END IF;
+  ELSIF OLD.closed_at IS NOT NULL
+    AND ROW(NEW.closed_at, NEW.winning_bid_id, NEW.leading_bid_id)
+      IS DISTINCT FROM ROW(OLD.closed_at, OLD.winning_bid_id, OLD.leading_bid_id) THEN
+    RAISE EXCEPTION 'the outcome of closed auction % is immutable', NEW.id
+      USING ERRCODE = 'check_violation',
+            CONSTRAINT = 'auctions_closed_outcome_immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -139,6 +166,7 @@ CREATE TABLE public.auctions (
     closed_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     leading_bid_id bigint,
+    winning_bid_id bigint,
     CONSTRAINT auctions_closed_at_check CHECK (((closed_at IS NULL) OR (closed_at >= ends_at))),
     CONSTRAINT auctions_currency_code_check CHECK (((currency_code)::text ~ '^[A-Z]{3}$'::text)),
     CONSTRAINT auctions_description_check CHECK (((description = btrim(description)) AND ((char_length(description) >= 1) AND (char_length(description) <= 10000)))),
@@ -149,7 +177,8 @@ CREATE TABLE public.auctions (
     CONSTRAINT auctions_terminal_state_check CHECK (((cancelled_at IS NULL) OR (closed_at IS NULL))),
     CONSTRAINT auctions_title_check CHECK ((((title)::text = btrim((title)::text)) AND ((char_length((title)::text) >= 1) AND (char_length((title)::text) <= 160)))),
     CONSTRAINT auctions_updated_at_check CHECK ((updated_at >= created_at)),
-    CONSTRAINT auctions_version_check CHECK ((version >= 1))
+    CONSTRAINT auctions_version_check CHECK ((version >= 1)),
+    CONSTRAINT auctions_winning_bid_closed_check CHECK (((winning_bid_id IS NULL) OR (closed_at IS NOT NULL)))
 );
 
 
@@ -489,6 +518,13 @@ CREATE TRIGGER auctions_version_single_step BEFORE UPDATE OF version ON public.a
 
 
 --
+-- Name: auctions auctions_winner_on_close; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER auctions_winner_on_close BEFORE UPDATE ON public.auctions FOR EACH ROW EXECUTE FUNCTION public.auction_require_winner_on_close();
+
+
+--
 -- Name: outbox_events outbox_events_current_auction_version; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -516,6 +552,14 @@ ALTER TABLE ONLY public.auctions
 
 ALTER TABLE ONLY public.auctions
     ADD CONSTRAINT auctions_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.users(id);
+
+
+--
+-- Name: auctions auctions_winning_bid_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auctions
+    ADD CONSTRAINT auctions_winning_bid_id_fkey FOREIGN KEY (id, winning_bid_id) REFERENCES public.bids(auction_id, id);
 
 
 --
@@ -587,4 +631,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260922090000'),
     ('20260923090000'),
     ('20260923100000'),
-    ('20260929120000');
+    ('20260929120000'),
+    ('20261012100000');

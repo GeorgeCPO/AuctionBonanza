@@ -87,3 +87,18 @@ export function wrapPool(pool: Pool): DatabasePool {
     end: async () => pool.end(),
   };
 }
+
+// Best-effort ROLLBACK for a failed transaction. The original error is the
+// one worth reporting, and a client whose rollback failed is destroyed when
+// it is released with that error.
+export async function rollbackQuietly(client: DatabaseClient): Promise<void> {
+  try {
+    await client.query("ROLLBACK");
+  } catch {
+    // Preserve the original transaction error.
+  }
+}
+
+export function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}

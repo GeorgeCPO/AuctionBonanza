@@ -11,6 +11,10 @@ root `docker-compose.yml`. Nothing here imports a service's code.
   Valkey, and the edge. identity-service is stood in for by a test issuer that
   signs the access tokens auction-service verifies.
 
+- The same file also covers the close: the finalizer process closes an auction
+  whose deadline has passed, and the SSE client sees the closed auction with
+  its winner.
+
 Each run uses its own database (created from `db/schema.sql`), Kafka topic and
 consumer group, and auction ids far from other tests' Valkey channels.
 

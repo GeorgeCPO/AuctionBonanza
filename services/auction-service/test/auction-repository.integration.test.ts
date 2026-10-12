@@ -263,4 +263,74 @@ describe.skipIf(databaseUrl === undefined)("auction PostgreSQL repository", () =
       );
     }
   });
+
+  it("reads the winning bid of a closed auction and null for an open or unsold one", async () => {
+    const bidderResult = await pool.query<{ id: string }>(
+      `INSERT INTO users (email, username, password_hash)
+       VALUES ($1, 'Auction Bidder', '$argon2id$test')
+       RETURNING id::text`,
+      [`auction-bidder-${randomUUID()}@example.com`],
+    );
+    const bidderId = bidderResult.rows[0]!.id;
+    const auctions = await pool.query<{ id: string; title: string }>(
+      `INSERT INTO auctions (
+         owner_id, title, description, currency_code, starts_at, ends_at,
+         starting_price_minor, minimum_bid_increment_minor
+       )
+       VALUES
+         ($1, 'Sold', 'Closed with a winner', 'USD',
+          clock_timestamp() - interval '20 minutes', clock_timestamp() - interval '10 minutes', 0, 1),
+         ($1, 'Unsold', 'Closed without a winner', 'USD',
+          clock_timestamp() - interval '20 minutes', clock_timestamp() - interval '10 minutes', 0, 1),
+         ($1, 'Open', 'Still open', 'USD',
+          clock_timestamp() - interval '10 minutes', clock_timestamp() + interval '10 minutes', 0, 1)
+       RETURNING id::text, title`,
+      [ownerId],
+    );
+    const idOf = (title: string): string => auctions.rows.find((row) => row.title === title)!.id;
+    try {
+      const bid = await pool.query<{ id: string }>(
+        `INSERT INTO bids (auction_id, bidder_id, amount_minor, idempotency_key, created_at)
+         VALUES ($1, $2, 500, 'repository-test', clock_timestamp() - interval '15 minutes')
+         RETURNING id::text`,
+        [idOf("Sold"), bidderId],
+      );
+      const winningBidId = bid.rows[0]!.id;
+      // No version step, so no outbox event is needed for these direct writes.
+      await pool.query(
+        `UPDATE auctions
+         SET leading_bid_id = $2, closed_at = clock_timestamp(), winning_bid_id = $2
+         WHERE id = $1`,
+        [idOf("Sold"), winningBidId],
+      );
+      await pool.query("UPDATE auctions SET closed_at = clock_timestamp() WHERE id = $1", [
+        idOf("Unsold"),
+      ]);
+
+      const expected = new Map([
+        [idOf("Sold"), winningBidId],
+        [idOf("Unsold"), null],
+        [idOf("Open"), null],
+      ]);
+      const entries = await repository.list({ limit: 100 });
+      for (const [auctionId, winner] of expected) {
+        await expect(repository.findById(auctionId)).resolves.toMatchObject({
+          winningBidId: winner,
+        });
+        expect(entries.find((entry) => entry.auction.id === auctionId)?.auction.winningBidId).toBe(
+          winner,
+        );
+      }
+    } finally {
+      // A closed auction's outcome is immutable, so its leading bid cannot be
+      // cleared first. Deleting the bid and the auction in one statement is
+      // fine: foreign keys are checked at the end of the statement.
+      await pool.query(
+        `WITH removed AS (DELETE FROM bids WHERE auction_id = $1 RETURNING id)
+         DELETE FROM auctions WHERE id = $1`,
+        [idOf("Sold")],
+      );
+      await pool.query("DELETE FROM users WHERE id = $1", [bidderId]);
+    }
+  });
 });
