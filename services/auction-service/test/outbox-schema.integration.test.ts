@@ -83,7 +83,9 @@ describe.skipIf(databaseUrl === undefined)("outbox PostgreSQL schema", () => {
       [`outbox-schema-owner-${randomUUID()}@example.com`],
     );
     const owner = ownerResult.rows[0];
-    if (owner === undefined) throw new Error("owner fixture was not inserted");
+    if (owner === undefined) {
+      throw new Error("owner fixture was not inserted");
+    }
     ownerId = owner.id;
 
     const auctionResult = await database.query<{ id: string }>(
@@ -97,7 +99,9 @@ describe.skipIf(databaseUrl === undefined)("outbox PostgreSQL schema", () => {
       [ownerId],
     );
     const auction = auctionResult.rows[0];
-    if (auction === undefined) throw new Error("auction fixture was not inserted");
+    if (auction === undefined) {
+      throw new Error("auction fixture was not inserted");
+    }
     auctionId = auction.id;
   });
 
