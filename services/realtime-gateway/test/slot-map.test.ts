@@ -8,15 +8,18 @@ describe("SlotMap.fromShards", () => {
     {
       slots: [0, 5460],
       nodes: [
-        { role: "replica", endpoint: "localhost", port: 7004 },
-        { role: "master", endpoint: "localhost", port: 7001 },
+        { id: "r1", role: "replica", endpoint: "localhost", port: 7004 },
+        { id: "a", role: "master", endpoint: "localhost", port: 7001 },
       ],
     },
     {
       slots: [5461, 5470, 5472, 10922],
-      nodes: [{ role: "master", endpoint: "", ip: "10.0.0.2", port: 7002 }],
+      nodes: [{ id: "b", role: "master", endpoint: "", ip: "10.0.0.2", port: 7002 }],
     },
-    { slots: [10923, 16383], nodes: [{ role: "master", endpoint: "localhost", port: 7003 }] },
+    {
+      slots: [10923, 16383],
+      nodes: [{ id: "c", role: "master", endpoint: "localhost", port: 7003 }],
+    },
   ];
 
   it("maps each slot to the primary owning it", () => {

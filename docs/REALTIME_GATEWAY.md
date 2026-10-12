@@ -449,11 +449,14 @@ Remaining gaps compared with owning the connections:
 - A lost connection still resyncs every watched auction, and a read waits
   until every lost connection is back, so one unavailable primary stalls the
   whole edge.
+- A slot that moves away and back between two checks (A to B to A) is not
+  reported: the check compares only the current owner with the owner at
+  subscribe time.
 - On a failover, node-redis starts resubscribing a dropped connection's
-  channels without waiting for confirmation. The check reports those channels
-  as moved, and the resync that follows subscribes and waits, which covers the
-  read-too-early window after one interval. Failover is not exercised yet
-  (the local cluster has no replicas).
+  channels without waiting for confirmation, and the edge may read before
+  they are confirmed. The check should report those channels as moved (the
+  promoted replica is a new owner), and the resync that follows subscribes and
+  waits, but this is reasoned, not tested: the local cluster has no replicas.
 
 ### The deferred design
 

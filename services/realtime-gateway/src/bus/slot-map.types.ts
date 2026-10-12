@@ -7,6 +7,7 @@ export interface ClusterShardReply {
 }
 
 export interface ClusterShardNodeReply {
+  id: string;
   role: string;
   port?: number;
   ip?: string;

@@ -1,3 +1,5 @@
+import type { ClusterShardReply } from "../../src/bus/slot-map.types.js";
+
 // A primary of the test cluster, as the cluster knows it.
 export interface Primary {
   address: string;
@@ -14,10 +16,5 @@ export interface PrimaryConnection extends Primary {
   client: PrimaryClient;
 }
 
-// One entry of the CLUSTER SHARDS reply (node-redis 6 speaks RESP3, so maps
-// arrive as plain objects). `slots` is a flat list of inclusive [start, end]
-// pairs.
-export interface ClusterShard {
-  slots: number[];
-  nodes: { id: string; role: string }[];
-}
+// One entry of the CLUSTER SHARDS reply, as the gateway reads it.
+export type ClusterShard = ClusterShardReply;
