@@ -76,14 +76,18 @@ export class AuctionFixtures {
   // Accepts the next qualifying bid and returns the resulting outbox event ID.
   async acceptBid(auctionId: string, bidderId: string): Promise<string> {
     const amount = this.nextAmountByAuction.get(auctionId);
-    if (amount === undefined) throw new Error(`Unknown fixture auction ${auctionId}`);
+    if (amount === undefined) {
+      throw new Error(`Unknown fixture auction ${auctionId}`);
+    }
     const outcome = await this.bids.placeBid({
       auctionId,
       bidderId,
       amountMinor: amount.toString(),
       idempotencyKey: randomUUID(),
     });
-    if (outcome.kind !== "placed") throw new Error(`Fixture bid was not placed: ${outcome.kind}`);
+    if (outcome.kind !== "placed") {
+      throw new Error(`Fixture bid was not placed: ${outcome.kind}`);
+    }
     this.nextAmountByAuction.set(auctionId, amount + 100n);
 
     const result = await this.pool.query<{ event_id: string }>(
@@ -127,7 +131,9 @@ export class AuctionFixtures {
       [eventId],
     );
     const row = result.rows[0];
-    if (row === undefined) throw new Error(`No outbox event ${eventId}`);
+    if (row === undefined) {
+      throw new Error(`No outbox event ${eventId}`);
+    }
     return {
       eventId: row.event_id as string,
       eventType: row.event_type as string,
@@ -179,11 +185,15 @@ export class Gate {
   private arrivalListeners: (() => void)[] = [];
 
   async pass(): Promise<void> {
-    if (this.opened) return;
+    if (this.opened) {
+      return;
+    }
     this.waiting += 1;
     const listeners = this.arrivalListeners;
     this.arrivalListeners = [];
-    for (const listener of listeners) listener();
+    for (const listener of listeners) {
+      listener();
+    }
     await this.openPromise;
   }
 
@@ -216,7 +226,9 @@ export function captureLogger(): CapturedLogger {
 export async function waitFor(condition: () => Promise<boolean>, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {
-    if (Date.now() > deadline) throw new Error(`Condition not met within ${timeoutMs}ms`);
+    if (Date.now() > deadline) {
+      throw new Error(`Condition not met within ${timeoutMs}ms`);
+    }
     await delay(50);
   }
 }

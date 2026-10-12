@@ -85,12 +85,14 @@ export class AuctionService implements AuctionServicePort {
 
   async create(ownerId: string, input: CreateAuctionInput): Promise<CreateAuctionOutcome> {
     const title = input.title.trim();
-    if (characterLength(title) < 1 || characterLength(title) > 160) {
+    const titleLength = characterLength(title);
+    if (titleLength < 1 || titleLength > 160) {
       return { kind: "invalid", message: "title must contain between 1 and 160 characters" };
     }
 
     const description = input.description.trim();
-    if (characterLength(description) < 1 || characterLength(description) > 10_000) {
+    const descriptionLength = characterLength(description);
+    if (descriptionLength < 1 || descriptionLength > 10_000) {
       return {
         kind: "invalid",
         message: "description must contain between 1 and 10000 characters",
@@ -189,8 +191,11 @@ export class AuctionService implements AuctionServicePort {
     const missingIds: string[] = [];
     for (const id of parsedIds) {
       const state = statesById.get(id);
-      if (state === undefined) missingIds.push(id);
-      else items.push(state);
+      if (state === undefined) {
+        missingIds.push(id);
+      } else {
+        items.push(state);
+      }
     }
     return { kind: "found", liveStates: { items, missingIds, observedAt: snapshot.observedAt } };
   }
@@ -199,45 +204,73 @@ export class AuctionService implements AuctionServicePort {
   // since asking twice for the same state is harmless.
   private parseLiveStateIds(value: string): string[] | undefined {
     const ids = [...new Set(value.split(","))];
-    if (ids.length > MAX_LIVE_STATE_IDS) return undefined;
-    if (!ids.every((id) => isPostgresBigintId(id))) return undefined;
+    if (ids.length > MAX_LIVE_STATE_IDS) {
+      return undefined;
+    }
+    if (!ids.every((id) => isPostgresBigintId(id))) {
+      return undefined;
+    }
     return ids;
   }
 
   private parseLimit(value: string | undefined): number | undefined {
-    if (value === undefined) return DEFAULT_AUCTION_LIST_LIMIT;
-    if (!/^[1-9][0-9]*$/.test(value)) return undefined;
+    if (value === undefined) {
+      return DEFAULT_AUCTION_LIST_LIMIT;
+    }
+    if (!/^[1-9][0-9]*$/.test(value)) {
+      return undefined;
+    }
 
     const limit = Number(value);
-    if (!Number.isSafeInteger(limit) || limit > MAX_AUCTION_LIST_LIMIT) return undefined;
+    if (!Number.isSafeInteger(limit) || limit > MAX_AUCTION_LIST_LIMIT) {
+      return undefined;
+    }
     return limit;
   }
 
   private parseCursor(value: string | undefined): CursorParseResult {
-    if (value === undefined) return { kind: "absent" };
+    if (value === undefined) {
+      return { kind: "absent" };
+    }
     if (value.length > MAX_AUCTION_LIST_CURSOR_LENGTH || !/^[A-Za-z0-9_-]+$/.test(value)) {
       return { kind: "invalid" };
     }
 
     try {
       const decoded = Buffer.from(value, "base64url").toString("utf8");
-      if (Buffer.from(decoded, "utf8").toString("base64url") !== value) return { kind: "invalid" };
+      if (Buffer.from(decoded, "utf8").toString("base64url") !== value) {
+        return { kind: "invalid" };
+      }
 
       const candidate: unknown = JSON.parse(decoded);
-      if (typeof candidate !== "object" || candidate === null) return { kind: "invalid" };
-      if (!("createdAt" in candidate) || !("id" in candidate)) return { kind: "invalid" };
-      if (Object.keys(candidate).length !== 2) return { kind: "invalid" };
+      if (typeof candidate !== "object" || candidate === null) {
+        return { kind: "invalid" };
+      }
+      if (!("createdAt" in candidate) || !("id" in candidate)) {
+        return { kind: "invalid" };
+      }
+      if (Object.keys(candidate).length !== 2) {
+        return { kind: "invalid" };
+      }
 
       const { createdAt, id } = candidate;
       if (typeof createdAt !== "string" || !CURSOR_TIMESTAMP_PATTERN.test(createdAt)) {
         return { kind: "invalid" };
       }
       const timestamp = new Date(createdAt);
-      if (Number.isNaN(timestamp.getTime())) return { kind: "invalid" };
+      if (Number.isNaN(timestamp.getTime())) {
+        return { kind: "invalid" };
+      }
       // Date is used only to validate the calendar, never to rebuild the cursor.
-      if (timestamp.toISOString() !== `${createdAt.slice(0, 23)}Z`) return { kind: "invalid" };
-      if (createdAt.startsWith("0000-")) return { kind: "invalid" };
-      if (typeof id !== "string" || !isPostgresBigintId(id)) return { kind: "invalid" };
+      if (timestamp.toISOString() !== `${createdAt.slice(0, 23)}Z`) {
+        return { kind: "invalid" };
+      }
+      if (createdAt.startsWith("0000-")) {
+        return { kind: "invalid" };
+      }
+      if (typeof id !== "string" || !isPostgresBigintId(id)) {
+        return { kind: "invalid" };
+      }
 
       return { kind: "present", cursor: { createdAt, id } };
     } catch {

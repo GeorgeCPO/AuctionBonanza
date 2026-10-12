@@ -47,7 +47,9 @@ describe("auction authentication hook", () => {
     ["Bearer signed-token", "not-a-bigint-id"],
   ])("fails closed for invalid credentials", async (authorization, userId) => {
     const verify = vi.fn<(token: string) => Promise<AuthenticatedPrincipal>>(async () => {
-      if (authorization === "Bearer rejected") throw new Error("invalid signature");
+      if (authorization === "Bearer rejected") {
+        throw new Error("invalid signature");
+      }
       return { userId, sessionId: "session-1", tokenId: "token-1" };
     });
     const app = makeApp(verify);

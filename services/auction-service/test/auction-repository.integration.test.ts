@@ -40,7 +40,9 @@ describe.skipIf(databaseUrl === undefined)("auction PostgreSQL repository", () =
       [`auction-api-${randomUUID()}@example.com`],
     );
     const owner = result.rows[0];
-    if (owner === undefined) throw new Error("owner fixture was not inserted");
+    if (owner === undefined) {
+      throw new Error("owner fixture was not inserted");
+    }
     ownerId = owner.id;
   });
 
@@ -96,7 +98,9 @@ describe.skipIf(databaseUrl === undefined)("auction PostgreSQL repository", () =
       let cursor: string | undefined;
       for (let pageNumber = 0; pageNumber < 5; pageNumber += 1) {
         const result = await service.list({ search, limit: String(limit), cursor });
-        if (result.kind !== "found") throw new Error("Expected a page");
+        if (result.kind !== "found") {
+          throw new Error("Expected a page");
+        }
         const { items, nextCursor } = result.page;
         expect(items.length).toBe(Math.min(limit, fixtures.length - ids.length));
         ids.push(...items.map((item) => item.id));
@@ -144,7 +148,9 @@ describe.skipIf(databaseUrl === undefined)("auction PostgreSQL repository", () =
     ];
     for (const search of searches) {
       const result = await service.list({ search: search.term });
-      if (result.kind !== "found") throw new Error("Expected a page");
+      if (result.kind !== "found") {
+        throw new Error("Expected a page");
+      }
       expect(result.page.items.map((item) => item.title)).toEqual(search.titles);
       expect(result.page.nextCursor).toBeNull();
     }
@@ -170,7 +176,9 @@ describe.skipIf(databaseUrl === undefined)("auction PostgreSQL repository", () =
     const before = await pool.query<{ time: Date }>("SELECT clock_timestamp() AS time");
     const outcome = await service.create(ownerId, input);
     const after = await pool.query<{ time: Date }>("SELECT clock_timestamp() AS time");
-    if (outcome.kind !== "created") throw new Error("Expected successful creation");
+    if (outcome.kind !== "created") {
+      throw new Error("Expected successful creation");
+    }
     expect(outcome.auction.phase).toBe("open");
     expect(outcome.auction.startsAt.getTime()).toBeGreaterThanOrEqual(
       before.rows[0]!.time.getTime(),

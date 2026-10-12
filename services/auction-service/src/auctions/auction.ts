@@ -79,10 +79,18 @@ export interface AuctionPhaseFacts {
 // exactly once. `observedAt` must be captured under a row lock via
 // `clock_timestamp()` for any time-sensitive transition, never `now()`.
 export function derivePhase(facts: AuctionPhaseFacts, observedAt: Date): AuctionPhase {
-  if (facts.cancelledAt !== null) return "cancelled";
-  if (facts.closedAt !== null) return "closed";
-  if (observedAt < facts.startsAt) return "scheduled";
-  if (observedAt < facts.endsAt) return "open";
+  if (facts.cancelledAt !== null) {
+    return "cancelled";
+  }
+  if (facts.closedAt !== null) {
+    return "closed";
+  }
+  if (observedAt < facts.startsAt) {
+    return "scheduled";
+  }
+  if (observedAt < facts.endsAt) {
+    return "open";
+  }
   return "awaiting_finalization";
 }
 

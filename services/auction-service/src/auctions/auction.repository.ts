@@ -139,7 +139,9 @@ export class PostgresAuctionRepository implements AuctionRepository {
         ],
       );
       const row = inserted.rows[0] as AuctionRow | undefined;
-      if (row === undefined) throw new Error("Inserted auction was not returned");
+      if (row === undefined) {
+        throw new Error("Inserted auction was not returned");
+      }
       return { kind: "created", auction: this.mapAuction(row) };
     } catch (error) {
       if (
@@ -231,11 +233,15 @@ export class PostgresAuctionRepository implements AuctionRepository {
     );
     const rows = result.rows as AuctionLiveStateRow[];
     const observedAt = rows[0]?.observed_at;
-    if (observedAt === undefined) throw new Error("Live-state query returned no rows");
+    if (observedAt === undefined) {
+      throw new Error("Live-state query returned no rows");
+    }
 
     const states: AuctionLiveState[] = [];
     for (const row of rows) {
-      if (row.auction_id === null) continue;
+      if (row.auction_id === null) {
+        continue;
+      }
       states.push(this.mapLiveState(row, observedAt));
     }
     return { states, observedAt };

@@ -51,7 +51,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL schema", () => {
       [`bid-schema-owner-${randomUUID()}@example.com`],
     );
     const owner = ownerResult.rows[0];
-    if (owner === undefined) throw new Error("owner fixture was not inserted");
+    if (owner === undefined) {
+      throw new Error("owner fixture was not inserted");
+    }
     ownerId = owner.id;
 
     const bidderResult = await database.query<{ id: string }>(
@@ -61,7 +63,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL schema", () => {
       [`bid-schema-bidder-${randomUUID()}@example.com`],
     );
     const bidder = bidderResult.rows[0];
-    if (bidder === undefined) throw new Error("bidder fixture was not inserted");
+    if (bidder === undefined) {
+      throw new Error("bidder fixture was not inserted");
+    }
     bidderId = bidder.id;
 
     const auctionResult = await database.query<{ id: string }>(
@@ -75,7 +79,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL schema", () => {
       [ownerId],
     );
     const auction = auctionResult.rows[0];
-    if (auction === undefined) throw new Error("auction fixture was not inserted");
+    if (auction === undefined) {
+      throw new Error("auction fixture was not inserted");
+    }
     auctionId = auction.id;
   });
 
@@ -173,7 +179,9 @@ describe.skipIf(databaseUrl === undefined)("bid PostgreSQL schema", () => {
       [`bid-schema-other-${randomUUID()}@example.com`],
     );
     const otherBidder = otherBidderResult.rows[0];
-    if (otherBidder === undefined) throw new Error("other bidder fixture was not inserted");
+    if (otherBidder === undefined) {
+      throw new Error("other bidder fixture was not inserted");
+    }
 
     await insertBid({ idempotencyKey: "shared-key" });
     await insertBid({

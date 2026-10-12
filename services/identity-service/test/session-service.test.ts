@@ -119,7 +119,9 @@ describe("SessionService", () => {
     const outcome = await service.rotate(presentedToken);
 
     expect(outcome.kind).toBe("success");
-    if (outcome.kind !== "success") throw new Error("expected success");
+    if (outcome.kind !== "success") {
+      throw new Error("expected success");
+    }
     expect(outcome.credentials.refreshToken).not.toBe(presentedToken);
     expect(queries.map(({ text }) => text.trim().split(/\s+/).slice(0, 3).join(" "))).toEqual([
       "BEGIN",
@@ -197,7 +199,9 @@ describe("SessionService", () => {
 
   it("rolls back and never returns credentials when rotation fails before commit", async () => {
     const query = vi.fn<DatabaseClient["query"]>(async (text): Promise<QueryResult> => {
-      if (text.includes("FOR UPDATE")) throw new Error("database unavailable");
+      if (text.includes("FOR UPDATE")) {
+        throw new Error("database unavailable");
+      }
       return { rows: [] };
     });
     const { database, release } = makeTransactionalDatabase(query);

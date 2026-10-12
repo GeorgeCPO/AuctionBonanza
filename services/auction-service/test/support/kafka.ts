@@ -55,7 +55,9 @@ export class KafkaTestTopics {
       (sum, partition) => sum + Number(BigInt(partition.high) - BigInt(partition.low)),
       0,
     );
-    if (total === 0) return [];
+    if (total === 0) {
+      return [];
+    }
 
     const messages: ConsumedMessage[] = [];
     const consumer = this.kafka.consumer({
@@ -120,7 +122,9 @@ export class KafkaTestTopics {
 // Works for both consumed messages and the outbound messages a transport saw.
 export function eventIdOf(message: { readonly headers: Readonly<Record<string, string>> }): string {
   const eventId = message.headers["event-id"];
-  if (eventId === undefined) throw new Error("Message has no event-id header");
+  if (eventId === undefined) {
+    throw new Error("Message has no event-id header");
+  }
   return eventId;
 }
 
