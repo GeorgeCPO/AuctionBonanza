@@ -103,11 +103,22 @@ pnpm --filter @auction-bonanza/auction-service test
 TEST_KAFKA_BROKERS=localhost:9092 \
 TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
 pnpm --filter @auction-bonanza/realtime-gateway test
+
+TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
+TEST_KAFKA_BROKERS=localhost:9092 \
+TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
+pnpm --filter @auction-bonanza/e2e-tests test
 ```
 
-The outbox publisher tests create and drop their own temporary databases from
-`db/schema.sql` (so the database user needs `CREATEDB`), and their own Kafka
-topics. `TEST_KAFKA_FAULT_INJECTION_UPSTREAM` enables only the broker outage
+`tests/e2e` is the end-to-end suite. It compiles the services from source and
+runs each as its own process (the auction-service API and outbox publisher,
+the relay, and the edge), then follows a bid from HTTP to an SSE client. It
+treats every service as a black box, so each service's own tests stay
+self-contained.
+
+The outbox publisher tests and the end-to-end suite create and drop their own
+temporary databases from `db/schema.sql` (so the database user needs
+`CREATEDB`), and their own Kafka topics. `TEST_KAFKA_FAULT_INJECTION_UPSTREAM` enables only the broker outage
 test.
 
 ## Continuous integration
@@ -128,7 +139,7 @@ and on pushes to `master`:
    test runs, including the Kafka outage test.
 
 Integration tests still skip themselves locally when their variables are
-unset. When `CI=true`, the auction, identity, and realtime gateway Vitest configurations
+unset. When `CI=true`, the auction, identity, realtime gateway, and end-to-end Vitest configurations
 instead fail before running any test if a variable they need is missing.
 
 To reproduce the CI run locally (port `19092` must be free):
@@ -208,3 +219,16 @@ Watch an auction's channel with
 `docker compose exec valkey-1 valkey-cli -c -p 7001 ssubscribe auction:<id>`
 (`-c` follows the redirect to the node that owns the channel). Its guarantees
 are described in [`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md#relay).
+
+The gateway's SSE edge serves those channels to clients on port 3003. It reads
+live states from `auction-service`, so start the API first:
+
+```sh
+cp services/realtime-gateway/.env.edge.example services/realtime-gateway/.env.edge
+pnpm --filter @auction-bonanza/realtime-gateway start:edge:local
+curl -N 'http://localhost:3003/v1/stream?auctions=<id>'
+```
+
+Each stream starts with one `snapshot` per auction (or `unavailable` for an
+auction that does not exist), then `bid-accepted` events; see
+[`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md#client-protocol).

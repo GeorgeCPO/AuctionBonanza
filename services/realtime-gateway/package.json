@@ -8,6 +8,8 @@
     "start": "node dist/index.js",
     "start:relay": "node dist/relay.main.js",
     "start:relay:local": "node --env-file-if-exists=.env.relay dist/relay.main.js",
+    "start:edge": "node dist/edge.main.js",
+    "start:edge:local": "node --env-file-if-exists=.env.edge dist/edge.main.js",
     "test": "pnpm --filter @auction-bonanza/contracts build && vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
