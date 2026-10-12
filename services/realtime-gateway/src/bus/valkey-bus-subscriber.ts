@@ -1,6 +1,9 @@
 import type { Logger } from "pino";
 import { createCluster } from "redis";
 
+import { slotOf } from "./hash-slots.js";
+import { readSlotMap } from "./read-slot-map.js";
+import type { SlotMap } from "./slot-map.js";
 import type {
   BusSubscriber,
   ShardSubscriberClient,
@@ -17,12 +20,16 @@ import { SerialByKey } from "../shared/serial-by-key.js";
 // and waits for every confirmation before the connection emits "ready", so
 // "ready" marks the moment its subscriptions are live again.
 //
-// Known gap: when a slot moves to another primary, or a failover replaces
-// one, node-redis moves the channels to the new owner internally and reports
-// nothing on success. Messages published in between are lost without an
-// interruption, and the edge only notices at the next event of an affected
-// auction. A shard subscriber of our own replaces this class in a later
-// step; see "Edge shard subscriber" in docs/REALTIME_GATEWAY.md.
+// When a slot moves to another primary, or a failover replaces one,
+// node-redis moves the channels to the new owner internally and reports
+// nothing on success; messages published in between are lost silently. So
+// the subscriber remembers which primary owned each watched channel when it
+// was subscribed and compares that with CLUSTER SHARDS every
+// `topologyCheckIntervalMs`. A channel whose owner changed is reported as
+// lost, and the registry subscribes it again and resyncs it. The loss is
+// bounded by one interval instead of waiting for the auction's next event.
+// "Edge shard subscriber" in docs/REALTIME_GATEWAY.md explains why this
+// stays on node-redis's cluster client instead of owning the connections.
 export class ValkeyBusSubscriber implements BusSubscriber {
   private readonly cluster: ReturnType<typeof createCluster>;
   private readonly logger: Logger;
@@ -36,9 +43,15 @@ export class ValkeyBusSubscriber implements BusSubscriber {
   // would otherwise attach a new listener to a channel whose SUNSUBSCRIBE is
   // still in flight, and drop it when the reply arrives.
   private readonly operationsByChannel = new SerialByKey();
+  // The primary that owned each watched channel's slot when it was
+  // subscribed, per the slot map of that moment (undefined if none was known).
+  private readonly ownersAtSubscribe = new Map<string, string | undefined>();
+  private slotMap: SlotMap | undefined;
+  private topologyTimer: NodeJS.Timeout | undefined;
+  private checkingTopology = false;
   private connected = false;
 
-  constructor(options: ValkeyBusSubscriberOptions) {
+  constructor(private readonly options: ValkeyBusSubscriberOptions) {
     this.logger = options.logger.child({ component: "valkey" });
     this.cluster = createCluster({
       rootNodes: options.nodes.map((node) => ({ url: `redis://${node}` })),
@@ -82,15 +95,33 @@ export class ValkeyBusSubscriber implements BusSubscriber {
   async connect(): Promise<void> {
     await this.cluster.connect();
     this.connected = true;
+    this.slotMap = await this.readSlotMapOrUndefined();
+    this.topologyTimer = setInterval(
+      () => void this.checkTopology(),
+      this.options.topologyCheckIntervalMs,
+    );
+    this.topologyTimer.unref();
   }
 
   subscribe(channel: string, listener: (message: string) => void): Promise<void> {
-    return this.operationsByChannel.run(channel, () => this.cluster.sSubscribe(channel, listener));
+    return this.operationsByChannel.run(channel, async () => {
+      if (this.ownersAtSubscribe.has(channel)) {
+        // Subscribed before and reported lost: drop what node-redis still
+        // holds, so the new listener is not added next to the old one.
+        await this.cluster.sUnsubscribe(channel).catch(() => undefined);
+      }
+      // Read before subscribing: a move during the subscribe then shows up as
+      // a changed owner at the next check.
+      const owner = this.slotMap?.ownerOf(slotOf(channel));
+      await this.cluster.sSubscribe(channel, listener);
+      this.ownersAtSubscribe.set(channel, owner);
+    });
   }
 
   unsubscribe(channel: string): Promise<void> {
     return this.operationsByChannel.run(channel, async () => {
       await this.cluster.sUnsubscribe(channel);
+      this.ownersAtSubscribe.delete(channel);
     });
   }
 
@@ -114,7 +145,54 @@ export class ValkeyBusSubscriber implements BusSubscriber {
       return;
     }
     this.connected = false;
+    clearInterval(this.topologyTimer);
     await this.cluster.close();
+  }
+
+  // Reports the watched channels whose slot has another owner than the one
+  // they were subscribed at: node-redis followed the move silently, so
+  // messages published meanwhile may have been lost.
+  private async checkTopology(): Promise<void> {
+    if (this.checkingTopology || !this.connected) {
+      return;
+    }
+    this.checkingTopology = true;
+    try {
+      const slotMap = await this.readSlotMapOrUndefined();
+      if (slotMap === undefined || !this.connected) {
+        return;
+      }
+      this.slotMap = slotMap;
+      const moved: string[] = [];
+      for (const [channel, subscribedAt] of this.ownersAtSubscribe) {
+        const owner = slotMap.ownerOf(slotOf(channel));
+        if (subscribedAt !== undefined && owner !== undefined && owner !== subscribedAt) {
+          moved.push(channel);
+        }
+        if (owner !== undefined) {
+          this.ownersAtSubscribe.set(channel, owner);
+        }
+      }
+      if (moved.length > 0) {
+        this.logger.warn({ channels: moved.length }, "slots moved; watched auctions will resync");
+      }
+      for (const channel of moved) {
+        for (const listener of this.subscriptionLostListeners) {
+          listener(channel);
+        }
+      }
+    } finally {
+      this.checkingTopology = false;
+    }
+  }
+
+  private async readSlotMapOrUndefined(): Promise<SlotMap | undefined> {
+    try {
+      return await readSlotMap(this.options.nodes, this.options.connectTimeoutMs);
+    } catch (error) {
+      this.logger.warn({ err: error }, "could not read the cluster topology");
+      return undefined;
+    }
   }
 
   // Attaches to subscriber connections not seen before. `masters` and their

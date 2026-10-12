@@ -34,6 +34,47 @@ x-valkey-node: &valkey-node
   tmpfs:
     - /data
 
+# One-shot cluster formation, shared by the clusters below. The nodes to form
+# come from the NODES environment variable of each service. If they already
+# form one healthy cluster covering every slot, it changes nothing. Otherwise
+# (first start, or a node restarted blank) it resets all of them and creates
+# the cluster again. That discards subscriptions, which clients must survive
+# anyway.
+x-valkey-init: &valkey-init
+  image: valkey/valkey:9.0.6
+  entrypoint: ["/bin/sh", "-c"]
+  command:
+    - |
+      set -eu
+      nodes="$$NODES"
+      first="$${nodes%% *}"
+      healthy=true
+      for node in $$nodes; do
+        info="$$(valkey-cli -h "$${node%:*}" -p "$${node#*:}" cluster info)"
+        echo "$$info" | grep -q '^cluster_state:ok' || healthy=false
+        echo "$$info" | grep -q '^cluster_known_nodes:3' || healthy=false
+        echo "$$info" | grep -q '^cluster_slots_assigned:16384' || healthy=false
+      done
+      if [ "$$healthy" = true ]; then
+        echo "Valkey cluster already formed"
+      else
+        addresses=""
+        for node in $$nodes; do
+          host="$${node%:*}"
+          port="$${node#*:}"
+          valkey-cli -h "$$host" -p "$$port" flushall > /dev/null
+          valkey-cli -h "$$host" -p "$$port" cluster reset hard > /dev/null
+          # valkey-cli --cluster create expects addresses, not hostnames.
+          addresses="$$addresses $$(getent hosts "$$host" | cut -d ' ' -f 1):$$port"
+        done
+        valkey-cli --cluster create $$addresses --cluster-replicas 0 --cluster-yes
+      fi
+      until valkey-cli -h "$${first%:*}" -p "$${first#*:}" cluster info | grep -q '^cluster_state:ok'; do
+        sleep 1
+      done
+      valkey-cli -h "$${first%:*}" -p "$${first#*:}" cluster shards
+  restart: "no"
+
 services:
   postgres:
     image: postgres:18.6-bookworm
@@ -144,12 +185,12 @@ services:
     ports:
       - "7003:7003"
 
-  # One-shot cluster formation. If the three nodes already form one healthy
-  # cluster covering every slot, it changes nothing. Otherwise (first start,
-  # or a node restarted blank) it resets all three and creates the cluster
-  # again. That discards subscriptions, which clients must survive anyway.
+  # Forms the cluster the integration tests share. Every test that publishes or
+  # subscribes uses it, so nothing may change its slot ownership.
   valkey-init:
-    image: valkey/valkey:9.0.6
+    <<: *valkey-init
+    environment:
+      NODES: "valkey-1:7001 valkey-2:7002 valkey-3:7003"
     depends_on:
       valkey-1:
         condition: service_healthy
@@ -157,37 +198,43 @@ services:
         condition: service_healthy
       valkey-3:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        nodes="valkey-1:7001 valkey-2:7002 valkey-3:7003"
-        healthy=true
-        for node in $$nodes; do
-          info="$$(valkey-cli -h "$${node%:*}" -p "$${node#*:}" cluster info)"
-          echo "$$info" | grep -q '^cluster_state:ok' || healthy=false
-          echo "$$info" | grep -q '^cluster_known_nodes:3' || healthy=false
-          echo "$$info" | grep -q '^cluster_slots_assigned:16384' || healthy=false
-        done
-        if [ "$$healthy" = true ]; then
-          echo "Valkey cluster already formed"
-        else
-          addresses=""
-          for node in $$nodes; do
-            host="$${node%:*}"
-            port="$${node#*:}"
-            valkey-cli -h "$$host" -p "$$port" flushall > /dev/null
-            valkey-cli -h "$$host" -p "$$port" cluster reset hard > /dev/null
-            # valkey-cli --cluster create expects addresses, not hostnames.
-            addresses="$$addresses $$(getent hosts "$$host" | cut -d ' ' -f 1):$$port"
-          done
-          valkey-cli --cluster create $$addresses --cluster-replicas 0 --cluster-yes
-        fi
-        until valkey-cli -h valkey-1 -p 7001 cluster info | grep -q '^cluster_state:ok'; do
-          sleep 1
-        done
-        valkey-cli -h valkey-1 -p 7001 cluster shards
-    restart: "no"
+
+  # A second cluster for tests that change the topology (moving a slot, and
+  # later failing over a primary). Only those tests connect to it, so what they
+  # do cannot disturb the shared cluster or its tests. Same image and settings;
+  # three primaries, no replicas yet.
+  valkey-topology-1:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7101
+    ports:
+      - "7101:7101"
+
+  valkey-topology-2:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7102
+    ports:
+      - "7102:7102"
+
+  valkey-topology-3:
+    <<: *valkey-node
+    environment:
+      VALKEY_PORT: 7103
+    ports:
+      - "7103:7103"
+
+  valkey-topology-init:
+    <<: *valkey-init
+    environment:
+      NODES: "valkey-topology-1:7101 valkey-topology-2:7102 valkey-topology-3:7103"
+    depends_on:
+      valkey-topology-1:
+        condition: service_healthy
+      valkey-topology-2:
+        condition: service_healthy
+      valkey-topology-3:
+        condition: service_healthy
 
 volumes:
   postgres18_data:

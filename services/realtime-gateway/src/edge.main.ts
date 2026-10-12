@@ -17,6 +17,7 @@ if (import.meta.main) {
     nodes: config.valkeyNodes,
     clientName: "realtime-edge",
     connectTimeoutMs: config.valkeyConnectTimeoutMs,
+    topologyCheckIntervalMs: config.topologyCheckIntervalMs,
     logger,
   });
   const registry = new AuctionRegistry({

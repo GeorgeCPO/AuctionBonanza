@@ -13,6 +13,7 @@ describe("parseEdgeConfig", () => {
       port: 3003,
       valkeyNodes: ["localhost:7001", "localhost:7002"],
       valkeyConnectTimeoutMs: 2_000,
+      topologyCheckIntervalMs: 5_000,
       auctionServiceUrl: "http://localhost:3002",
       maxAuctionsPerStream: 50,
       maxConnections: 10_000,
