@@ -667,6 +667,11 @@ Known gaps, to be closed in step 2 or later:
   on that edge receives changes, and new watchers of auctions the edge does
   not hold yet wait for their first snapshot. The owned-connections design in
   the shard subscriber section resyncs per connection.
+  Decision: left as is for now. The failover test exercises a graceful
+  failover only, so it gives no measure of this stall, and a crash test needs
+  control of the containers. Revisit it, together with the A to B to A gap
+  above, if the edge is run against a real cluster, and measure the stall
+  first.
 - **No conflation.** Slow clients are closed rather than
   [conflated](#slow-clients).
 - **Mass resyncs have no jitter.** They are batched and bounded per edge, but
