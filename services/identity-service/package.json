@@ -10,8 +10,10 @@
     "start:local": "node --env-file-if-exists=.env dist/index.js",
     "test:unit": "pnpm run build:deps && vitest run -c vitest.unit.config.ts",
     "test:unit:coverage": "pnpm run build:deps && vitest run -c vitest.unit.config.ts --coverage",
+    "test:unit:watch": "pnpm run build:deps && vitest -c vitest.unit.config.ts",
     "test:integration": "pnpm run build:deps && vitest run -c vitest.integration.config.ts",
     "test:integration:coverage": "pnpm run build:deps && vitest run -c vitest.integration.config.ts --coverage",
+    "test:integration:local": "node ../../scripts/with-local-test-env.mjs pnpm run test:integration",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

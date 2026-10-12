@@ -821,7 +821,7 @@ reads are slow, fail, or return the state as of their request; clients come
 and go. Every client must see a snapshot first, only contiguous changes after
 it, and never go backwards, and at regular quiet points and at the end every
 client must hold the database's state. A failure prints its seed and the last
-steps, and `SIM_SEED=<n>` replays it. The test also fails if the worlds stop
+steps, and `pnpm test:sim:replay <n>` replays it. The test also fails if the worlds stop
 reaching a situation (a gap, a lost subscription, a buffer overflow), so it
 cannot pass by doing nothing.
 
