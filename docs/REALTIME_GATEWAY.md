@@ -454,9 +454,13 @@ Remaining gaps compared with owning the connections:
   subscribe time.
 - On a failover, node-redis starts resubscribing a dropped connection's
   channels without waiting for confirmation, and the edge may read before
-  they are confirmed. The check should report those channels as moved (the
-  promoted replica is a new owner), and the resync that follows subscribes and
-  waits, but this is reasoned, not tested: the local cluster has no replicas.
+  they are confirmed. The promoted replica is a new owner, so the check
+  reports the channels as moved, and the resync that follows subscribes and
+  waits. `topology.integration.test.ts` fails a primary over to its replica
+  (`CLUSTER FAILOVER`), publishes before the edge has subscribed at the new
+  primary, and expects every client to reach the current version. With the
+  check's report removed, that test fails. Only the manual (graceful)
+  failover is exercised; a primary that dies without warning is not.
 
 ### The deferred design
 
@@ -655,7 +659,8 @@ Known gaps, to be closed in step 2 or later:
 
 - **A slot move is repaired up to one topology-check interval late.** Messages
   published in the window of a move are lost; the check (default 5 s) reports
-  the channel, and the auction resyncs. Failover is not exercised yet.
+  the channel, and the auction resyncs. A graceful failover is covered by the
+  same mechanism; a crashed primary is not exercised.
 - **One unavailable shard stalls the whole edge.** A lost connection resyncs
   every watched auction, not only those on its shard, and every read waits
   until all lost connections are back. While one primary is down, no auction
@@ -745,24 +750,24 @@ reconnects.
 
 ## Failure scenarios
 
-| Scenario                                             | What happens                                                                                                                                                                                                                                                                                  | Client sees                                                                     |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Kafka delivers an event 5 times                      | The relay forwards each copy. The edge applies the first and drops the rest (`v ≤ c`).                                                                                                                                                                                                        | One change.                                                                     |
-| Outbox late duplicate `v, v+1, v`                    | The edge drops the second `v`.                                                                                                                                                                                                                                                                | `v`, `v+1`.                                                                     |
-| Relay crashes after `SPUBLISH`, before commit        | Its partitions stall until the group's session timeout (`RELAY_SESSION_TIMEOUT_MS`) expires; then another relay re-reads from the committed offset and publishes again.                                                                                                                       | Nothing extra; edges drop the duplicates.                                       |
-| Relay publishes `v+1` before `v` (rebalance overlap) | The edge sees a gap, resyncs, then drops `v` when it arrives.                                                                                                                                                                                                                                 | A `snapshot` at `v+1` or later.                                                 |
-| Malformed event on the topic                         | The relay logs and skips it. The next event of that auction reveals the gap.                                                                                                                                                                                                                  | A `snapshot` once the auction changes again.                                    |
-| All relays down, or lagging                          | Nothing is published. Edges keep serving their last state. When relays recover they forward the backlog in order, and edges drop what is already reflected.                                                                                                                                   | Correct but stale state, then the missed changes in order.                      |
-| Relay group new, or its offsets expired              | The relay replays the retained history from the oldest event. Edges drop what they already reflect.                                                                                                                                                                                           | Nothing extra; possibly duplicates, which edges drop.                           |
-| Retention deleted events the relay had not read      | The relay continues from the oldest retained event; those events are skipped.                                                                                                                                                                                                                 | A `snapshot` once each affected auction changes again; until then, stale state. |
-| Valkey unavailable                                   | Relays pause and stop committing. Edges lose their subscriptions and keep retrying. When Valkey returns, edges resubscribe and resync, and relays forward the backlog.                                                                                                                        | Stale state during the outage, then `snapshot`s.                                |
-| One Valkey shard fails over                          | Connections to that shard drop. Edges resync the auctions on it; relays retry publishes to it. Edges resync every auction (see [known gaps](#edge-implementation-status)); the topology check reports the moved channels, which are subscribed again before they are read. Not yet exercised. | A `snapshot` for the affected auctions.                                         |
-| Valkey resharding moves a slot                       | node-redis follows the move silently; the periodic topology check reports the channels whose owner changed, and the edge subscribes them again and resyncs those auctions.                                                                                                                    | A `snapshot` for the affected auctions.                                         |
-| Edge too slow for Valkey                             | Valkey closes the edge's connection; the edge reconnects and resyncs.                                                                                                                                                                                                                         | A `snapshot` per watched auction.                                               |
-| `auction-service` unavailable during a resync        | The auction stays `syncing` and its events stay buffered, with a bound. Fetches retry with backoff. On buffer overflow the buffer is discarded, since the fetch replaces it anyway.                                                                                                           | Last good state, no changes until the fetch succeeds.                           |
-| An edge crashes                                      | Its clients reconnect through the load balancer to other edges, which serve memory or fetch in bulk.                                                                                                                                                                                          | A reconnect, then `snapshot`s.                                                  |
-| Rolling edge deploy                                  | A draining edge stops accepting connections and closes existing ones spread over a drain window, so clients do not all reconnect at the same instant.                                                                                                                                         | A reconnect, then `snapshot`s.                                                  |
-| Slow client                                          | The edge conflates that connection.                                                                                                                                                                                                                                                           | Skipped intermediate prices, then current `snapshot`s.                          |
+| Scenario                                             | What happens                                                                                                                                                                                                                                                                                              | Client sees                                                                     |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Kafka delivers an event 5 times                      | The relay forwards each copy. The edge applies the first and drops the rest (`v ≤ c`).                                                                                                                                                                                                                    | One change.                                                                     |
+| Outbox late duplicate `v, v+1, v`                    | The edge drops the second `v`.                                                                                                                                                                                                                                                                            | `v`, `v+1`.                                                                     |
+| Relay crashes after `SPUBLISH`, before commit        | Its partitions stall until the group's session timeout (`RELAY_SESSION_TIMEOUT_MS`) expires; then another relay re-reads from the committed offset and publishes again.                                                                                                                                   | Nothing extra; edges drop the duplicates.                                       |
+| Relay publishes `v+1` before `v` (rebalance overlap) | The edge sees a gap, resyncs, then drops `v` when it arrives.                                                                                                                                                                                                                                             | A `snapshot` at `v+1` or later.                                                 |
+| Malformed event on the topic                         | The relay logs and skips it. The next event of that auction reveals the gap.                                                                                                                                                                                                                              | A `snapshot` once the auction changes again.                                    |
+| All relays down, or lagging                          | Nothing is published. Edges keep serving their last state. When relays recover they forward the backlog in order, and edges drop what is already reflected.                                                                                                                                               | Correct but stale state, then the missed changes in order.                      |
+| Relay group new, or its offsets expired              | The relay replays the retained history from the oldest event. Edges drop what they already reflect.                                                                                                                                                                                                       | Nothing extra; possibly duplicates, which edges drop.                           |
+| Retention deleted events the relay had not read      | The relay continues from the oldest retained event; those events are skipped.                                                                                                                                                                                                                             | A `snapshot` once each affected auction changes again; until then, stale state. |
+| Valkey unavailable                                   | Relays pause and stop committing. Edges lose their subscriptions and keep retrying. When Valkey returns, edges resubscribe and resync, and relays forward the backlog.                                                                                                                                    | Stale state during the outage, then `snapshot`s.                                |
+| One Valkey shard fails over                          | Connections to that shard drop. Edges resync the auctions on it; relays retry publishes to it. Edges resync every auction (see [known gaps](#edge-implementation-status)); the topology check reports the moved channels, which are subscribed again before they are read. A graceful failover is tested. | A `snapshot` for the affected auctions.                                         |
+| Valkey resharding moves a slot                       | node-redis follows the move silently; the periodic topology check reports the channels whose owner changed, and the edge subscribes them again and resyncs those auctions.                                                                                                                                | A `snapshot` for the affected auctions.                                         |
+| Edge too slow for Valkey                             | Valkey closes the edge's connection; the edge reconnects and resyncs.                                                                                                                                                                                                                                     | A `snapshot` per watched auction.                                               |
+| `auction-service` unavailable during a resync        | The auction stays `syncing` and its events stay buffered, with a bound. Fetches retry with backoff. On buffer overflow the buffer is discarded, since the fetch replaces it anyway.                                                                                                                       | Last good state, no changes until the fetch succeeds.                           |
+| An edge crashes                                      | Its clients reconnect through the load balancer to other edges, which serve memory or fetch in bulk.                                                                                                                                                                                                      | A reconnect, then `snapshot`s.                                                  |
+| Rolling edge deploy                                  | A draining edge stops accepting connections and closes existing ones spread over a drain window, so clients do not all reconnect at the same instant.                                                                                                                                                     | A reconnect, then `snapshot`s.                                                  |
+| Slow client                                          | The edge conflates that connection.                                                                                                                                                                                                                                                                       | Skipped intermediate prices, then current `snapshot`s.                          |
 
 **Known limitation:** an edge cannot tell a quiet auction from a stalled relay.
 Clients see correct but possibly old state without an indication of it. A later
@@ -829,10 +834,17 @@ cannot pass by doing nothing.
   it does reaches every channel. (Resolving early fails this test.)
 - Migrating a watched auction's slot to another primary (`CLUSTER SETSLOT`)
   ends with every client at the correct version without another event.
-  `slot-migration.integration.test.ts` runs the migration on the topology
+  `topology.integration.test.ts` runs the migration on the topology
   cluster and publishes inside the window in which no subscription exists,
   checking that the message really reached no subscriber. The edge runs with
   a 200 ms topology check there; the default is 5 s.
+- Failing a shard over to its replica (`CLUSTER FAILOVER`) ends with every
+  client at the correct version without another event, the same way: the
+  test publishes to the promoted replica the moment it reports itself as a
+  primary, before the old primary has told the edge, and checks that the
+  message reached no subscriber. It runs in the same file as the migration
+  test, because both change the topology cluster and vitest runs files in
+  parallel.
 - The subscriber's topology check reports exactly the channels of a moved
   slot, not the channels whose slots stayed.
 - Valkey down at the relay: no offset is committed, and every event arrives
@@ -859,12 +871,13 @@ cannot pass by doing nothing.
    formed by a one-shot `valkey-init` service in the style of `kafka-init`.
    Cluster mode is needed from the start because the shard subscriber reads
    `CLUSTER SHARDS`, and slot migration needs a second primary to move to. The
-   integration tests are gated on `TEST_VALKEY_NODES`. A second, identical
-   cluster on ports 7101–7103 (`TEST_VALKEY_TOPOLOGY_NODES`) is for tests that
-   change the topology: moving a slot on the shared cluster could break a test
-   that happens to use a channel in that slot, and no rule about which ids
-   tests may use would hold as tests are added. Replicas come with the
-   failover exercise.
+   integration tests are gated on `TEST_VALKEY_NODES`. A second
+   cluster on ports 7101–7106 (`TEST_VALKEY_TOPOLOGY_NODES` names the three
+   primaries) is for tests that change the topology: moving a slot on the
+   shared cluster could break a test that happens to use a channel in that
+   slot, and no rule about which ids tests may use would hold as tests are
+   added. It has one replica per primary (7104–7106) for the failover
+   exercise.
 3. **Relay:** the consumer, envelope, publish-then-commit, pause on Valkey
    failure, and starting new groups at the oldest retained event.
 4. **Edge**, in two steps:
@@ -873,8 +886,9 @@ cannot pass by doing nothing.
       every Valkey reconnect, through node-redis's cluster client.
    2. The shard subscriber with a `CLUSTER SETSLOT` and failover exercise,
       conflation, and a spread-out drain.
-5. **Documentation and exercises:** update this document from "proposed", then
-   add replicas to the local cluster to exercise primary failover.
+5. **Documentation and exercises:** update this document from "proposed". The
+   local topology cluster has replicas, and a primary-failover exercise is in
+   place.
 
 ## Open questions
 

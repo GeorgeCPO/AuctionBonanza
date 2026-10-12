@@ -22,7 +22,9 @@ import type { Primary } from "./support/test-cluster.types.js";
 
 // The topology cluster, which only tests that change the topology use. Moving
 // a slot on the cluster the other tests share could break a test that happens
-// to use a channel in that slot.
+// to use a channel in that slot. Every test that changes it is in this file,
+// because vitest runs files in parallel and two changes at once would
+// interfere.
 const topologyNodes = process.env.TEST_VALKEY_TOPOLOGY_NODES?.split(",");
 
 // Step 2 exercise: the cluster moves a hash slot to another primary while an
@@ -176,8 +178,6 @@ describe.skipIf(topologyNodes === undefined)(
   },
 );
 
-// In this file so that it never runs next to the migration above: vitest runs
-// files in parallel, and both move slots on the topology cluster.
 // node-redis follows a moved slot silently, so the subscriber compares the
 // cluster topology with the owners its channels were subscribed at, and
 // reports the channels of a moved slot as lost.
@@ -240,6 +240,113 @@ describe.skipIf(topologyNodes === undefined)(
       // One check reports everything it found in one synchronous loop, so
       // anything it wrongly reported would already be in `lost`.
       expect(lost.toSorted()).toEqual(moved.toSorted());
+    });
+  },
+);
+
+// Failover exercise: the primary of a shard is replaced by its replica, as
+// when it fails or is upgraded. The old primary learns of it a moment after
+// the replica starts serving, and only then do its subscribers get
+// `sunsubscribe` and subscribe again at the new primary. Messages published
+// in between reach nobody, and nothing but the topology check reports it.
+describe.skipIf(topologyNodes === undefined)(
+  "a primary failing over to its replica",
+  { timeout: 120_000 },
+  () => {
+    const auctionsInSlot = 5;
+    // The window is open for as long as the old primary has not told the
+    // edge; each miss fails the shard over again.
+    const maxAttemptsToLoseAnEvent = 10;
+    let stub: LiveStateStub;
+    let bus: TestBus;
+    let cluster: TestCluster;
+    let edge: EdgeRun;
+    let client: SseTestClient | undefined;
+    let originalPrimary: Primary;
+    let currentPrimary: Primary;
+    let auctionIds: string[];
+
+    beforeEach(async () => {
+      stub = new LiveStateStub();
+      await stub.start();
+      bus = new TestBus(topologyNodes!);
+      await bus.connect();
+      cluster = new TestCluster(topologyNodes!);
+      await cluster.connect();
+
+      const firstCandidate = Number(randomAuctionId());
+      const slot = slotOf(auctionChannel(String(firstCandidate)));
+      auctionIds = auctionIdsInSlot(slot, auctionsInSlot, firstCandidate);
+      originalPrimary = await cluster.ownerOf(slot);
+      currentPrimary = originalPrimary;
+
+      for (const auctionId of auctionIds) {
+        stub.states.set(auctionId, liveState(auctionId, 1));
+      }
+      edge = await startEdge({
+        valkeyNodes: topologyNodes!,
+        auctionServiceUrl: stub.url,
+        topologyCheckIntervalMs: 200,
+      });
+      client = await SseTestClient.open(`${edge.url}/v1/stream?auctions=${auctionIds.join(",")}`);
+      for (const auctionId of auctionIds) {
+        await client.waitForTimeline(auctionId, ["snapshot@1"]);
+      }
+    });
+
+    afterEach(async () => {
+      client?.close();
+      await edge?.stop();
+      // Leave the topology as it was found: the original node is the primary.
+      const role = await cluster?.roleOf(originalPrimary);
+      if (role !== undefined && role !== "master") {
+        await cluster.promote(originalPrimary);
+      }
+      await cluster?.close();
+      await bus?.close();
+      await stub?.stop();
+    });
+
+    function latestVersions(): (string | undefined)[] {
+      return auctionIds.map((auctionId) => client!.timeline(auctionId).at(-1)?.split("@")[1]);
+    }
+
+    it("leaves every client at the current version without another event", async () => {
+      let lostVersion: number | undefined;
+      for (let attempt = 0; attempt < maxAttemptsToLoseAnEvent; attempt += 1) {
+        const version = 2 + attempt;
+        for (const auctionId of auctionIds) {
+          stub.states.set(auctionId, liveState(auctionId, version));
+        }
+        const replica = await cluster.replicaOf(currentPrimary);
+        currentPrimary = await cluster.promote(replica);
+
+        const delivered: number[] = [];
+        for (const auctionId of auctionIds) {
+          const message = serializeAuctionEvent(
+            "BidAccepted.v1",
+            bidAcceptedEvent(auctionId, version),
+          );
+          delivered.push(
+            await cluster.publishTo(currentPrimary, auctionChannel(auctionId), message),
+          );
+        }
+        if (delivered.some((count) => count === 0)) {
+          lostVersion = version;
+          break;
+        }
+        // The edge had subscribed at the new primary before the publish, so
+        // nothing was lost. Let every client reach this version and fail over
+        // again.
+        await expect
+          .poll(latestVersions, { timeout: 5_000, interval: 50 })
+          .toEqual(auctionIds.map(() => String(version)));
+      }
+      expect(lostVersion, "an event published before the edge subscribed again").toBeDefined();
+
+      await expect
+        .poll(latestVersions, { timeout: 10_000, interval: 50 })
+        .toEqual(auctionIds.map(() => String(lostVersion)));
     });
   },
 );
