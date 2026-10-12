@@ -109,7 +109,21 @@ and time in the next.
 - Automatic/max (proxy) bidding is out of scope; only this simple threshold
   rule is implemented.
 
-The bids model above defines simple bidding. Automatic/max bidding, and the
-finalization transaction that turns a leading bid into a persisted winner
-(unsold result or winning-bid reference) in the same transaction as its
-outbox event, remain deferred.
+The bids model above defines simple bidding. Automatic/max bidding remains
+deferred.
+
+## Finalization contract
+
+Finalization is implemented; the details and failure behavior are in
+[`FINALIZATION.md`](FINALIZATION.md).
+
+- A worker closes an auction once `ends_at` has passed and it is neither
+  cancelled nor closed. It locks the row, then in a later statement reads the
+  leading bid and `clock_timestamp()`.
+- One transaction sets `closed_at`, copies `leading_bid_id` into
+  `winning_bid_id`, advances `version` by one, and appends one
+  `AuctionClosed.v1` outbox event with that version.
+- `winning_bid_id` is the persisted outcome. It references the same bid that
+  led at the close. A closed auction with no `winning_bid_id` closed unsold.
+- A closed auction's outcome is immutable, and finalizing it again changes
+  nothing and emits nothing.

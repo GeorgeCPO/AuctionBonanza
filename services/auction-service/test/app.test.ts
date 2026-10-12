@@ -43,6 +43,7 @@ const auction: Auction = {
   version: "1",
   cancelledAt: null,
   closedAt: null,
+  winningBidId: null,
   createdAt: new Date("2029-12-01T10:00:00.000Z"),
   updatedAt: new Date("2029-12-01T10:00:00.000Z"),
   phase: "scheduled",

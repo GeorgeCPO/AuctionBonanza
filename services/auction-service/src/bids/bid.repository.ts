@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { BID_ACCEPTED_V1_EVENT_TYPE, parseBidAcceptedV1 } from "@auction-bonanza/contracts";
 
 import { derivePhase, type AuctionPhase } from "../auctions/auction.js";
-import type { Database, DatabaseClient } from "../database.js";
+import { rollbackQuietly, type Database } from "../database.js";
+import { insertOutboxEvent } from "../outbox/outbox.store.js";
 import type { Bid } from "./bid.js";
 
 interface BidRow extends Record<string, unknown> {
@@ -237,23 +238,7 @@ export class PostgresBidRepository implements BidRepository {
         amountMinor: bidRow.amount_minor,
         currencyCode: auctionRow.currency_code,
       });
-      // The event must carry the auction version this transaction just
-      // wrote: the outbox_events_current_auction_version trigger rejects any
-      // other version, which is what keeps per-auction publication ordered.
-      await client.query(
-        `INSERT INTO outbox_events (
-           event_id, event_type, occurred_at, auction_id, auction_version, payload
-         )
-         VALUES ($1::uuid, $2, $3::timestamptz, $4, $5, $6::jsonb)`,
-        [
-          event.eventId,
-          event.eventType,
-          event.occurredAt,
-          event.auctionId,
-          event.auctionVersion,
-          JSON.stringify(event),
-        ],
-      );
+      await insertOutboxEvent(client, event);
 
       await client.query("COMMIT");
       committed = true;
@@ -269,7 +254,7 @@ export class PostgresBidRepository implements BidRepository {
       };
     } catch (error) {
       if (!committed) {
-        await rollback(client);
+        await rollbackQuietly(client);
       }
       throw error;
     } finally {
@@ -305,13 +290,4 @@ function currentAuctionState(row: AuctionLockRow): PlacedAuctionState {
     leadingBidId: row.leading_bid_id,
     updatedAt: row.updated_at,
   };
-}
-
-async function rollback(client: DatabaseClient): Promise<void> {
-  try {
-    await client.query("ROLLBACK");
-  } catch {
-    // Preserve the original transaction error; the checked-out client is
-    // released immediately and pg will discard it if the connection failed.
-  }
 }

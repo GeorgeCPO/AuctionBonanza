@@ -7,6 +7,8 @@
     "build": "pnpm --filter @auction-bonanza/http-routing build && pnpm --filter @auction-bonanza/access-auth build && pnpm --filter @auction-bonanza/contracts build && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "start:local": "node --env-file-if-exists=.env dist/index.js",
+    "start:finalizer": "node dist/finalizer.main.js",
+    "start:finalizer:local": "node --env-file-if-exists=.env.finalizer dist/finalizer.main.js",
     "start:outbox-publisher": "node dist/outbox-publisher.main.js",
     "start:outbox-publisher:local": "node --env-file-if-exists=.env.outbox-publisher dist/outbox-publisher.main.js",
     "test": "pnpm --filter @auction-bonanza/http-routing build && pnpm --filter @auction-bonanza/access-auth build && pnpm --filter @auction-bonanza/contracts build && vitest run",

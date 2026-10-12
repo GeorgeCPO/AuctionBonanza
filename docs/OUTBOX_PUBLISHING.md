@@ -4,9 +4,13 @@ Status: accepted for the accepted-bid event path. Gateway consumption and SSE
 delivery are out of scope here.
 
 Bid acceptance appends a `BidAccepted.v1` row to `outbox_events` in the same
-transaction that accepts the bid (see
-[`AUCTION_LIFECYCLE.md`](AUCTION_LIFECYCLE.md)). The outbox publisher is a
-separate worker process that moves those committed rows to Kafka.
+transaction that accepts the bid, and finalization appends an
+`AuctionClosed.v1` row in the same transaction that closes the auction (see
+[`AUCTION_LIFECYCLE.md`](AUCTION_LIFECYCLE.md) and
+[`FINALIZATION.md`](FINALIZATION.md)). A closing event carries `null` for the
+winning bid, the winner and the amount when the auction closed unsold. The
+outbox publisher is a separate worker process that moves those committed rows
+to Kafka.
 
 ## Guarantees in one paragraph
 

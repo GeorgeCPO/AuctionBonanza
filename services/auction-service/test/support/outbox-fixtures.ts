@@ -60,6 +60,19 @@ export class AuctionFixtures {
     return auctionId;
   }
 
+  // Moves an auction's schedule into the past, as if its deadline had
+  // arrived. Bids are placed while it is open, through the real acceptance
+  // transaction, and the auction is expired afterwards.
+  async expire(auctionId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE auctions
+       SET starts_at = clock_timestamp() - interval '2 hours',
+           ends_at = clock_timestamp() - interval '1 second'
+       WHERE id = $1`,
+      [auctionId],
+    );
+  }
+
   // Accepts the next qualifying bid and returns the resulting outbox event ID.
   async acceptBid(auctionId: string, bidderId: string): Promise<string> {
     const amount = this.nextAmountByAuction.get(auctionId);

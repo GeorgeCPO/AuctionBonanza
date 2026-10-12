@@ -1,10 +1,35 @@
 import type { DatabaseClient } from "../database.js";
+import type { OutboxEventInput } from "./outbox.store.types.js";
 
 // Outbox publication state. Every function runs on a client the caller has
 // already placed inside a transaction; the row locks taken by
 // claimPublishableEvents are held until that transaction ends.
 
 const MAX_PUBLISH_ERROR_LENGTH = 1_000;
+
+// Appends an event in the caller's transaction. The event must carry the
+// auction version that transaction just wrote: the
+// outbox_events_current_auction_version trigger rejects any other version,
+// which is what keeps per-auction publication ordered.
+export async function insertOutboxEvent(
+  client: DatabaseClient,
+  event: OutboxEventInput,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO outbox_events (
+       event_id, event_type, occurred_at, auction_id, auction_version, payload
+     )
+     VALUES ($1::uuid, $2, $3::timestamptz, $4, $5, $6::jsonb)`,
+    [
+      event.eventId,
+      event.eventType,
+      event.occurredAt,
+      event.auctionId,
+      event.auctionVersion,
+      JSON.stringify(event),
+    ],
+  );
+}
 
 export interface ClaimedOutboxEvent {
   eventId: string;

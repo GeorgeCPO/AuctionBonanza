@@ -14,6 +14,7 @@ interface AuctionRow extends Record<string, unknown> {
   version: string;
   cancelled_at: Date | null;
   closed_at: Date | null;
+  winning_bid_id: string | null;
   created_at: Date;
   updated_at: Date;
   observed_at: Date;
@@ -94,6 +95,7 @@ const AUCTION_COLUMNS = `
   version::text AS version,
   cancelled_at,
   closed_at,
+  winning_bid_id::text AS winning_bid_id,
   created_at,
   updated_at`;
 
@@ -263,6 +265,7 @@ export class PostgresAuctionRepository implements AuctionRepository {
       version: row.version,
       cancelledAt: row.cancelled_at,
       closedAt: row.closed_at,
+      winningBidId: row.winning_bid_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       phase,
