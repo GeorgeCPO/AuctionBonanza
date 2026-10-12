@@ -19,6 +19,7 @@
 ## Working approach
 
 - Build incrementally; avoid infrastructure or abstractions that the current milestone does not need.
+- Before starting a new task, fetch and create a new branch from the latest `origin/master`. Never commit directly to `master`.
 - Preserve existing user changes and keep each change focused on the requested scope.
 - State important assumptions and explain meaningful architecture tradeoffs.
 - Prefer explicit behavior over hidden framework magic, especially around transactions, retries, ordering, and failure recovery.
