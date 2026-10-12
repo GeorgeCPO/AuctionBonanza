@@ -1,0 +1,172 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { auctionChannel, serializeAuctionEvent } from "../src/bus/bus.js";
+import {
+  bidAcceptedEvent,
+  liveState,
+  LiveStateStub,
+  randomAuctionId,
+  SseTestClient,
+  startEdge,
+  TestBus,
+} from "./support/edge-harness.js";
+import type { EdgeRun } from "./support/edge-harness.types.js";
+import { auctionIdsInSlot, slotOf } from "./support/hash-slots.js";
+import { TestCluster } from "./support/test-cluster.js";
+import type { Primary } from "./support/test-cluster.types.js";
+
+// The topology cluster, which only tests that change the topology use. Moving
+// a slot on the cluster the other tests share could break a test that happens
+// to use a channel in that slot.
+const topologyNodes = process.env.TEST_VALKEY_TOPOLOGY_NODES?.split(",");
+
+// Step 2 exercise: the cluster moves a hash slot to another primary while an
+// edge watches auctions in it, as it does when it is resharded.
+//
+// The primary that loses the slot tells its subscribers with `sunsubscribe`,
+// and node-redis subscribes again at the new owner. That takes a few
+// milliseconds, and nothing reports the messages published in between. The
+// edge's guarantee is that a client ends up with the current state without
+// anything else happening, so these tests publish exactly in that window.
+describe.skipIf(topologyNodes === undefined)(
+  "a slot moving to another primary",
+  { timeout: 60_000 },
+  () => {
+    const auctionsInSlot = 5;
+    // The window is a few milliseconds wide and the test process publishes
+    // right after the move, so it is missed only if the machine stalls the
+    // test between two steps. Each miss moves the slot again.
+    const maxAttemptsToLoseAnEvent = 10;
+    let stub: LiveStateStub;
+    let bus: TestBus;
+    let cluster: TestCluster;
+    let edge: EdgeRun;
+    let client: SseTestClient | undefined;
+    let slot: number;
+    let originalOwner: Primary;
+    let otherPrimary: Primary;
+    let currentOwner: Primary;
+    let auctionIds: string[];
+
+    beforeEach(async () => {
+      stub = new LiveStateStub();
+      await stub.start();
+      bus = new TestBus(topologyNodes!);
+      await bus.connect();
+      cluster = new TestCluster(topologyNodes!);
+      await cluster.connect();
+
+      // Several auctions whose channels share one slot, so one move affects
+      // them all.
+      const firstCandidate = Number(randomAuctionId());
+      slot = slotOf(auctionChannel(String(firstCandidate)));
+      auctionIds = auctionIdsInSlot(slot, auctionsInSlot, firstCandidate);
+      originalOwner = await cluster.ownerOf(slot);
+      currentOwner = originalOwner;
+      otherPrimary = cluster.primaries.find((primary) => primary.id !== originalOwner.id)!;
+
+      for (const auctionId of auctionIds) {
+        stub.states.set(auctionId, liveState(auctionId, 1));
+      }
+      edge = await startEdge({
+        valkeyNodes: topologyNodes!,
+        auctionServiceUrl: stub.url,
+        topologyCheckIntervalMs: 200,
+      });
+      client = await SseTestClient.open(`${edge.url}/v1/stream?auctions=${auctionIds.join(",")}`);
+      for (const auctionId of auctionIds) {
+        await client.waitForTimeline(auctionId, ["snapshot@1"]);
+      }
+    });
+
+    afterEach(async () => {
+      client?.close();
+      await edge?.stop();
+      // Leave the topology as it was found.
+      await cluster?.moveSlot(slot, originalOwner);
+      await cluster?.close();
+      await bus?.close();
+      await stub?.stop();
+    });
+
+    // Commits `version` for every auction, moves the slot, and publishes each
+    // event to the new owner the moment the move is done. Repeats with the
+    // next version until at least one event reached no subscriber, which means
+    // the edge really missed it. Returns the version that was published.
+    async function loseAnEventDuringAMove(firstVersion: number): Promise<number> {
+      for (let attempt = 0; attempt < maxAttemptsToLoseAnEvent; attempt += 1) {
+        const version = firstVersion + attempt;
+        for (const auctionId of auctionIds) {
+          stub.states.set(auctionId, liveState(auctionId, version));
+        }
+        const destination = currentOwner.id === originalOwner.id ? otherPrimary : originalOwner;
+        await cluster.moveSlot(slot, destination);
+        currentOwner = destination;
+
+        const delivered: number[] = [];
+        for (const auctionId of auctionIds) {
+          const message = serializeAuctionEvent(
+            "BidAccepted.v1",
+            bidAcceptedEvent(auctionId, version),
+          );
+          delivered.push(await cluster.publishTo(destination, auctionChannel(auctionId), message));
+        }
+        if (delivered.some((count) => count === 0)) {
+          return version;
+        }
+        // The edge had subscribed again before the publish, so nothing was
+        // lost. Let every client reach this version and move the slot again.
+        await expect
+          .poll(latestVersions, { timeout: 5_000, interval: 50 })
+          .toEqual(auctionIds.map(() => String(version)));
+      }
+      throw new Error(
+        `The edge subscribed again before the event was published in ${maxAttemptsToLoseAnEvent} moves in a row`,
+      );
+    }
+
+    function latestVersions(): (string | undefined)[] {
+      return auctionIds.map((auctionId) => {
+        const last = client!.timeline(auctionId).at(-1);
+        return last?.split("@")[1];
+      });
+    }
+
+    async function subscribersAtTheOwner(): Promise<number[]> {
+      return Promise.all(
+        auctionIds.map((auctionId) =>
+          cluster.subscribersOf(currentOwner, auctionChannel(auctionId)),
+        ),
+      );
+    }
+
+    it("leaves every client at the current version without another event", async () => {
+      const lostVersion = await loseAnEventDuringAMove(2);
+
+      // Whether the edge heard the event, or noticed it missed it and read
+      // the state again, every client must end up at that version.
+      await expect
+        .poll(latestVersions, { timeout: 5_000, interval: 50 })
+        .toEqual(auctionIds.map(() => String(lostVersion)));
+    });
+
+    it("repairs a missed event once the next event of the auction arrives", async () => {
+      const lostVersion = await loseAnEventDuringAMove(2);
+      // Wait until the edge is subscribed at the new owner again, so that the
+      // next event is delivered.
+      await expect
+        .poll(subscribersAtTheOwner, { timeout: 5_000, interval: 50 })
+        .toEqual(auctionIds.map(() => 1));
+
+      const nextVersion = lostVersion + 1;
+      for (const auctionId of auctionIds) {
+        stub.states.set(auctionId, liveState(auctionId, nextVersion));
+        await bus.publishBid(auctionId, nextVersion);
+      }
+
+      await expect
+        .poll(latestVersions, { timeout: 5_000, interval: 50 })
+        .toEqual(auctionIds.map(() => String(nextVersion)));
+    });
+  },
+);

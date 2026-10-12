@@ -28,5 +28,6 @@ export interface StartEdgeOptions {
   lingerMs?: number;
   heartbeatIntervalMs?: number;
   liveStateBatchDelayMs?: number;
+  topologyCheckIntervalMs?: number;
   logger?: Logger;
 }
