@@ -19,8 +19,12 @@ Each run uses its own database (created from `db/schema.sql`), Kafka topic and
 consumer group, and auction ids far from other tests' Valkey channels.
 
 ```sh
-TEST_DATABASE_URL=postgresql://auction:auction_local@localhost:5432/auction_db \
-TEST_KAFKA_BROKERS=localhost:9092 \
-TEST_VALKEY_NODES=localhost:7001,localhost:7002,localhost:7003 \
-pnpm --filter @auction-bonanza/e2e-tests test
+pnpm test:e2e:local
 ```
+
+`pnpm test:e2e` is the same run without the local defaults: it needs
+`TEST_DATABASE_URL`, `TEST_KAFKA_BROKERS` and `TEST_VALKEY_NODES` in the
+environment and fails at startup, naming any that is missing. `:local` sets them
+from `scripts/local-test.env`, which points at the root `docker-compose.yml`. See
+[`docs/TESTING.md`](../../docs/TESTING.md) for why this tier is not measured for
+coverage.

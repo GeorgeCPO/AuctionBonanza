@@ -7,13 +7,13 @@ import { afterAll, afterEach, beforeAll, beforeEach } from "vitest";
 import { wrapPool, type Database } from "../../src/database.js";
 import { OutboxPublisher } from "../../src/outbox/outbox.publisher.js";
 import { KafkaMessageTransport, type MessageTransport } from "../../src/outbox/outbox.transport.js";
+import { requireEnvironment } from "./environment.js";
 import { createIsolatedDatabase, type IsolatedDatabase } from "./isolated-database.js";
 import { KafkaTestTopics } from "./kafka.js";
 import { AuctionFixtures } from "./outbox-fixtures.js";
 
-export const adminDatabaseUrl = process.env.TEST_DATABASE_URL;
-export const kafkaBrokers = process.env.TEST_KAFKA_BROKERS;
-export const infrastructureMissing = adminDatabaseUrl === undefined || kafkaBrokers === undefined;
+const adminDatabaseUrl = requireEnvironment("TEST_DATABASE_URL");
+const kafkaBrokers = requireEnvironment("TEST_KAFKA_BROKERS");
 
 export const PUBLISH_TIMEOUT_MS = 3_000;
 // Long enough that a failed event never becomes due by itself during a test.
@@ -91,13 +91,13 @@ export class OutboxPublisherHarness {
   }
 
   private async setUp(): Promise<void> {
-    this.isolatedDatabase = await createIsolatedDatabase(adminDatabaseUrl!);
+    this.isolatedDatabase = await createIsolatedDatabase(adminDatabaseUrl);
     this.pool = new Pool({ connectionString: this.isolatedDatabase.url, max: 4 });
     this.fixtures = new AuctionFixtures(this.pool);
-    this.topics = new KafkaTestTopics(kafkaBrokers!);
+    this.topics = new KafkaTestTopics(kafkaBrokers);
     await this.topics.connect();
     this.kafka = new KafkaMessageTransport({
-      brokers: kafkaBrokers!.split(","),
+      brokers: kafkaBrokers.split(","),
       clientId: "outbox-publisher-test",
       publishTimeoutMs: PUBLISH_TIMEOUT_MS,
       logger: silentLogger,

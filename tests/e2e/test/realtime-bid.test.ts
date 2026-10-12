@@ -3,6 +3,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { requireEnvironment } from "./support/environment.js";
 import { createIsolatedDatabase } from "./support/isolated-database.js";
 import type { IsolatedDatabase } from "./support/isolated-database.types.js";
 import { TestTopic } from "./support/kafka.js";
@@ -18,9 +19,9 @@ import { SseTestClient } from "./support/sse-client.js";
 import { startTestIssuer } from "./support/test-issuer.js";
 import type { TestIssuer } from "./support/test-issuer.types.js";
 
-const databaseUrl = process.env.TEST_DATABASE_URL;
-const kafkaBrokers = process.env.TEST_KAFKA_BROKERS;
-const valkeyNodes = process.env.TEST_VALKEY_NODES;
+const databaseUrl = requireEnvironment("TEST_DATABASE_URL");
+const kafkaBrokers = requireEnvironment("TEST_KAFKA_BROKERS");
+const valkeyNodes = requireEnvironment("TEST_VALKEY_NODES");
 
 // The whole path of a bid, with every hop real and every service a black box:
 // each is compiled from source and run as its own process, and the test
@@ -34,9 +35,7 @@ const valkeyNodes = process.env.TEST_VALKEY_NODES;
 //
 // identity-service is the one service stood in for: a test issuer signs the
 // access tokens auction-service verifies.
-describe.skipIf(
-  databaseUrl === undefined || kafkaBrokers === undefined || valkeyNodes === undefined,
-)("a bid, end to end", { timeout: 180_000 }, () => {
+describe("a bid, end to end", { timeout: 180_000 }, () => {
   let auctionService: CompiledService | undefined;
   let gateway: CompiledService | undefined;
   let database: IsolatedDatabase | undefined;
@@ -54,10 +53,7 @@ describe.skipIf(
     ]);
     // Auction ids start high: the Valkey cluster, and so the auction
     // channels, are shared with the services' own tests.
-    database = await createIsolatedDatabase(
-      databaseUrl!,
-      BigInt(randomInt(1_000_000_000, 2 ** 47)),
-    );
+    database = await createIsolatedDatabase(databaseUrl, BigInt(randomInt(1_000_000_000, 2 ** 47)));
     pool = new Pool({ connectionString: database.url, max: 2 });
     // DROP DATABASE ... WITH (FORCE) in afterAll can terminate a connection
     // that pool.end() asked to close but the server has not processed yet.
@@ -65,7 +61,7 @@ describe.skipIf(
     // uncaught exception that fails the run.
     pool.on("error", () => {});
     issuer = await startTestIssuer();
-    topic = new TestTopic(kafkaBrokers!);
+    topic = new TestTopic(kafkaBrokers);
     await topic.create(3);
 
     const api = start(auctionService, "index.js", {
@@ -79,7 +75,7 @@ describe.skipIf(
     apiUrl = /http:\/\/\S+/.exec(String((await api.waitForLog("Server listening at")).msg))![0];
     start(auctionService, "outbox-publisher.main.js", {
       DATABASE_URL: database.url,
-      KAFKA_BROKERS: kafkaBrokers!,
+      KAFKA_BROKERS: kafkaBrokers,
       AUCTION_EVENTS_TOPIC: topic.name,
       OUTBOX_POLL_INTERVAL_MS: "100",
     });
@@ -88,16 +84,16 @@ describe.skipIf(
       FINALIZER_POLL_INTERVAL_MS: "100",
     });
     const relay = start(gateway, "relay.main.js", {
-      KAFKA_BROKERS: kafkaBrokers!,
+      KAFKA_BROKERS: kafkaBrokers,
       KAFKA_GROUP_ID: topic.groupId,
       AUCTION_EVENTS_TOPIC: topic.name,
-      VALKEY_NODES: valkeyNodes!,
+      VALKEY_NODES: valkeyNodes,
     });
     await relay.waitForLog("relay started");
     const edge = start(gateway, "edge.main.js", {
       HOST: "127.0.0.1",
       PORT: "0",
-      VALKEY_NODES: valkeyNodes!,
+      VALKEY_NODES: valkeyNodes,
       AUCTION_SERVICE_URL: apiUrl,
     });
     edgeUrl = `http://127.0.0.1:${String((await edge.waitForLog("edge started")).port)}`;

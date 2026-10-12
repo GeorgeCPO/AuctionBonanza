@@ -44,6 +44,7 @@
 ## Validation
 
 - Run the relevant tests, type checks, and lint commands exposed by the repository after making changes.
+- Put a test in the tier that matches what it depends on: `test/unit/` for no infrastructure, `test/integration/` for real PostgreSQL, Kafka, or Valkey, `tests/e2e` for services as black boxes. Each tier has its own command; see `docs/TESTING.md`.
 - Report what was verified and clearly identify checks that could not be run.
 - Do not weaken tests merely to make a change pass.
 
