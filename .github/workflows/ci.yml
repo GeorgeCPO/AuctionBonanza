@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 20
     env:
       # Same development-only credentials as docker-compose.yml and .env.example.
+      # scripts/local-test.env holds the same endpoints for local runs; CI sets
+      # its own so a missing value here fails the run instead of being filled in.
       DATABASE_URL: postgresql://auction:auction_local@localhost:5432/auction_db?sslmode=disable
       TEST_DATABASE_URL: postgresql://auction:auction_local@localhost:5432/auction_db
       TEST_KAFKA_BROKERS: localhost:9092
@@ -92,10 +94,20 @@ jobs:
             exit 1
           fi
 
-      # vitest.config.ts fails the run when CI=true and a TEST_* variable is
-      # missing, so integration tests cannot be skipped silently.
-      - name: Format, lint, typecheck, test and build
+      # The hermetic gate: format, lint, typecheck, unit tests with their
+      # coverage thresholds, and the production build. It needs no
+      # infrastructure.
+      - name: Format, lint, typecheck, unit tests and build
         run: pnpm check
+
+      # The integration and end-to-end Vitest configurations refuse to start
+      # when a TEST_* variable is missing, so neither tier can be skipped
+      # silently. Separate steps make a failure name its tier.
+      - name: Integration tests
+        run: pnpm test:integration
+
+      - name: End-to-end tests
+        run: pnpm test:e2e
 
       - name: Print infrastructure diagnostics
         if: failure()
