@@ -59,6 +59,11 @@ describe.skipIf(
       BigInt(randomInt(1_000_000_000, 2 ** 47)),
     );
     pool = new Pool({ connectionString: database.url, max: 2 });
+    // DROP DATABASE ... WITH (FORCE) in afterAll can terminate a connection
+    // that pool.end() asked to close but the server has not processed yet.
+    // pg reports that as an idle-client error, which would otherwise be an
+    // uncaught exception that fails the run.
+    pool.on("error", () => {});
     issuer = await startTestIssuer();
     topic = new TestTopic(kafkaBrokers!);
     await topic.create(3);
