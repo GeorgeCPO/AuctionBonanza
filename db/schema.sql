@@ -167,6 +167,9 @@ CREATE TABLE public.auctions (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     leading_bid_id bigint,
     winning_bid_id bigint,
+    finalization_attempts integer DEFAULT 0 NOT NULL,
+    next_finalization_attempt_at timestamp with time zone,
+    last_finalization_error character varying(1000),
     CONSTRAINT auctions_closed_at_check CHECK (((closed_at IS NULL) OR (closed_at >= ends_at))),
     CONSTRAINT auctions_currency_code_check CHECK (((currency_code)::text ~ '^[A-Z]{3}$'::text)),
     CONSTRAINT auctions_description_check CHECK (((description = btrim(description)) AND ((char_length(description) >= 1) AND (char_length(description) <= 10000)))),
@@ -632,4 +635,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260923090000'),
     ('20260923100000'),
     ('20260929120000'),
-    ('20261012100000');
+    ('20261012100000'),
+    ('20261013100000');

@@ -8,6 +8,7 @@ import type { Logger } from "pino";
 
 import { rollbackQuietly, toError, type Database } from "../database.js";
 import { backoffDelayMs, type RetryBackoffPolicy } from "../shared/backoff.js";
+import { describeError } from "../shared/errors.js";
 import { abortableSleep } from "../shared/sleep.js";
 import { PUBLISH_TIMEOUT_GRACE_MS } from "./outbox.config.js";
 import {
@@ -293,15 +294,4 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   } finally {
     clearTimeout(timer);
   }
-}
-
-function describeError(error: unknown): string {
-  if (error instanceof Error) {
-    const code =
-      "code" in error && (typeof error.code === "string" || typeof error.code === "number")
-        ? ` (${error.code})`
-        : "";
-    return `${error.name}${code}: ${error.message}`;
-  }
-  return String(error);
 }

@@ -11,6 +11,7 @@ describe("finalizer configuration", () => {
       pollIntervalMs: 1000,
       retryBaseDelayMs: 500,
       retryMaxDelayMs: 30000,
+      auctionRetryMaxDelayMs: 300000,
     });
   });
 
@@ -25,6 +26,10 @@ describe("finalizer configuration", () => {
         FINALIZER_RETRY_BASE_DELAY_MS: "1000",
         FINALIZER_RETRY_MAX_DELAY_MS: "500",
       },
+    ],
+    [
+      "a per-auction cap below the loop's cap",
+      { ...environment, FINALIZER_AUCTION_RETRY_MAX_DELAY_MS: "1000" },
     ],
   ])("rejects %s", (_label, candidate) => {
     expect(() => parseFinalizerConfig(candidate)).toThrow("Invalid finalizer configuration");

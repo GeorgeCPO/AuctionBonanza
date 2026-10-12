@@ -30,7 +30,9 @@ describe.skipIf(infrastructureMissing)(
       const auctionId = await fixtures.openAuction(harness.ownerId);
       const bidEventId = await fixtures.acceptBid(auctionId, harness.bidderId);
       await fixtures.expire(auctionId);
-      await new PostgresFinalizationRepository(wrapPool(pool)).finalizeNextDue();
+      await new PostgresFinalizationRepository(wrapPool(pool), {
+        retryBackoff: { baseDelayMs: 1_000, maxDelayMs: 1_000 },
+      }).finalizeNextDue();
       const closedEventId = (
         await pool.query<{ event_id: string }>(
           "SELECT event_id::text FROM outbox_events WHERE auction_id = $1 AND event_type = 'AuctionClosed.v1'",

@@ -164,3 +164,8 @@ available while a session family is relevant so replay can be detected.
 
 The PostgreSQL 18 Docker image uses the `postgres18_data` Compose volume mounted
 at `/var/lib/postgresql` for persistent storage.
+
+The finalization-failure migration adds three retry-bookkeeping columns to
+`auctions` (see [`FINALIZATION.md`](../../docs/FINALIZATION.md#failed-closes)).
+Apply it before starting a finalizer that records failures; older finalizers
+keep working against the new schema.

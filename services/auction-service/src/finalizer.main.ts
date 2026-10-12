@@ -53,7 +53,14 @@ if (import.meta.main) {
       { concurrency: config.concurrency, pollIntervalMs: config.pollIntervalMs },
       "finalizer started",
     );
-    const repository = new PostgresFinalizationRepository(database);
+    const repository = new PostgresFinalizationRepository(database, {
+      // Per-auction retries start like the loop's but back off to a longer cap:
+      // an auction that keeps failing needs a repair, not a quick retry.
+      retryBackoff: {
+        baseDelayMs: config.retryBaseDelayMs,
+        maxDelayMs: config.auctionRetryMaxDelayMs,
+      },
+    });
     const loops = Array.from({ length: config.concurrency }, (_, index) =>
       new FinalizationWorker({
         repository,
