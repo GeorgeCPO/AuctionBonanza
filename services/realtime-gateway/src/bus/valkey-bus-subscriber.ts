@@ -43,9 +43,13 @@ export class ValkeyBusSubscriber implements BusSubscriber {
   // would otherwise attach a new listener to a channel whose SUNSUBSCRIBE is
   // still in flight, and drop it when the reply arrives.
   private readonly operationsByChannel = new SerialByKey();
-  // The primary that owned each watched channel's slot when it was
-  // subscribed, per the slot map of that moment (undefined if none was known).
-  private readonly ownersAtSubscribe = new Map<string, string | undefined>();
+  // For each watched channel: its slot, and the primary that owned the slot
+  // when it was subscribed, per the slot map of that moment (undefined if
+  // none was known).
+  private readonly ownersAtSubscribe = new Map<
+    string,
+    { slot: number; owner: string | undefined }
+  >();
   private slotMap: SlotMap | undefined;
   private topologyTimer: NodeJS.Timeout | undefined;
   private checkingTopology = false;
@@ -112,9 +116,10 @@ export class ValkeyBusSubscriber implements BusSubscriber {
       }
       // Read before subscribing: a move during the subscribe then shows up as
       // a changed owner at the next check.
-      const owner = this.slotMap?.ownerOf(slotOf(channel));
+      const slot = slotOf(channel);
+      const owner = this.slotMap?.ownerOf(slot);
       await this.cluster.sSubscribe(channel, listener);
-      this.ownersAtSubscribe.set(channel, owner);
+      this.ownersAtSubscribe.set(channel, { slot, owner });
     });
   }
 
@@ -164,21 +169,30 @@ export class ValkeyBusSubscriber implements BusSubscriber {
       }
       this.slotMap = slotMap;
       const moved: string[] = [];
-      for (const [channel, subscribedAt] of this.ownersAtSubscribe) {
-        const owner = slotMap.ownerOf(slotOf(channel));
-        if (subscribedAt !== undefined && owner !== undefined && owner !== subscribedAt) {
+      for (const [channel, subscription] of this.ownersAtSubscribe) {
+        const owner = slotMap.ownerOf(subscription.slot);
+        if (owner === undefined) {
+          continue;
+        }
+        // A channel subscribed without a known owner is reported too: a move
+        // before this check cannot be ruled out, and a resync is harmless.
+        if (owner !== subscription.owner) {
           moved.push(channel);
         }
-        if (owner !== undefined) {
-          this.ownersAtSubscribe.set(channel, owner);
-        }
+        subscription.owner = owner;
       }
       if (moved.length > 0) {
         this.logger.warn({ channels: moved.length }, "slots moved; watched auctions will resync");
       }
       for (const channel of moved) {
         for (const listener of this.subscriptionLostListeners) {
-          listener(channel);
+          try {
+            listener(channel);
+          } catch (error) {
+            // One failing listener must not hide the other channels: their
+            // owners are already stored, so they would not be reported again.
+            this.logger.error({ err: error, channel }, "subscription-lost listener failed");
+          }
         }
       }
     } finally {
@@ -188,7 +202,13 @@ export class ValkeyBusSubscriber implements BusSubscriber {
 
   private async readSlotMapOrUndefined(): Promise<SlotMap | undefined> {
     try {
-      return await readSlotMap(this.options.nodes, this.options.connectTimeoutMs);
+      // Primaries learned earlier first, so a seed that is gone does not
+      // delay every check by its connect timeout.
+      const known = this.slotMap === undefined ? [] : [...this.slotMap.primaryAddresses()];
+      return await readSlotMap(
+        new Set([...known, ...this.options.nodes]),
+        this.options.connectTimeoutMs,
+      );
     } catch (error) {
       this.logger.warn({ err: error }, "could not read the cluster topology");
       return undefined;

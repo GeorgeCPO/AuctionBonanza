@@ -30,7 +30,21 @@ export class SlotMap {
 
   // The primary owning the slot, or undefined when no primary does.
   ownerOf(slot: number): string | undefined {
-    return this.ranges.find((range) => slot >= range.start && slot <= range.end)?.address;
+    // The ranges are sorted and do not overlap.
+    let low = 0;
+    let high = this.ranges.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      const range = this.ranges[middle]!;
+      if (slot < range.start) {
+        high = middle - 1;
+      } else if (slot > range.end) {
+        low = middle + 1;
+      } else {
+        return range.address;
+      }
+    }
+    return undefined;
   }
 
   primaryAddresses(): ReadonlySet<string> {

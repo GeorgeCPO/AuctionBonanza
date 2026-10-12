@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
+
+import { pino } from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { auctionChannel, serializeAuctionEvent } from "../src/bus/bus.js";
+import { ValkeyBusSubscriber } from "../src/bus/valkey-bus-subscriber.js";
 import {
   bidAcceptedEvent,
   liveState,
@@ -12,6 +16,7 @@ import {
 } from "./support/edge-harness.js";
 import type { EdgeRun } from "./support/edge-harness.types.js";
 import { auctionIdsInSlot, slotOf } from "./support/hash-slots.js";
+import { waitFor } from "./support/relay-harness.js";
 import { TestCluster } from "./support/test-cluster.js";
 import type { Primary } from "./support/test-cluster.types.js";
 
@@ -167,6 +172,74 @@ describe.skipIf(topologyNodes === undefined)(
       await expect
         .poll(latestVersions, { timeout: 5_000, interval: 50 })
         .toEqual(auctionIds.map(() => String(nextVersion)));
+    });
+  },
+);
+
+// In this file so that it never runs next to the migration above: vitest runs
+// files in parallel, and both move slots on the topology cluster.
+// node-redis follows a moved slot silently, so the subscriber compares the
+// cluster topology with the owners its channels were subscribed at, and
+// reports the channels of a moved slot as lost.
+describe.skipIf(topologyNodes === undefined)(
+  "ValkeyBusSubscriber topology check",
+  { timeout: 30_000 },
+  () => {
+    let cluster: TestCluster;
+    let subscriber: ValkeyBusSubscriber;
+    let slot: number | undefined;
+    let originalOwner: Primary | undefined;
+
+    beforeEach(async () => {
+      slot = undefined;
+      originalOwner = undefined;
+      cluster = new TestCluster(topologyNodes!);
+      await cluster.connect();
+      subscriber = new ValkeyBusSubscriber({
+        nodes: topologyNodes!,
+        clientName: `topology-check-${randomUUID()}`,
+        connectTimeoutMs: 2_000,
+        topologyCheckIntervalMs: 100,
+        logger: pino({ level: "silent" }),
+      });
+      await subscriber.connect();
+    });
+
+    afterEach(async () => {
+      await subscriber?.close();
+      // Only if the test got as far as moving the slot.
+      if (slot !== undefined && originalOwner !== undefined) {
+        await cluster?.moveSlot(slot, originalOwner);
+      }
+      await cluster?.close();
+    });
+
+    it("reports the channels of a moved slot, and only those", async () => {
+      const firstCandidate = Number(randomAuctionId());
+      const movedSlot = slotOf(auctionChannel(String(firstCandidate)));
+      const moved = auctionIdsInSlot(movedSlot, 3, firstCandidate).map(auctionChannel);
+      const owner = await cluster.ownerOf(movedSlot);
+      const destination = cluster.primaries.find((primary) => primary.id !== owner.id)!;
+      slot = movedSlot;
+      originalOwner = owner;
+      // A channel whose slot stays where it is.
+      let unmoved = auctionChannel(randomAuctionId());
+      while (slotOf(unmoved) === movedSlot) {
+        unmoved = auctionChannel(randomAuctionId());
+      }
+
+      const lost: string[] = [];
+      subscriber.onSubscriptionLost((channel) => lost.push(channel));
+      for (const channel of [...moved, unmoved]) {
+        await subscriber.subscribe(channel, () => {});
+      }
+
+      await cluster.moveSlot(movedSlot, destination);
+
+      await waitFor(() => lost.length >= moved.length, "the moved channels to be reported", 5_000);
+      // One check reports everything it found in one synchronous loop, so
+      // anything it wrongly reported would already be in `lost`.
+      expect(lost.toSorted()).toEqual(moved.toSorted());
     });
   },
 );
