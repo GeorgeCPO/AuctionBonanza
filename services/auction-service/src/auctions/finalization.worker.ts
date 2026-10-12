@@ -14,9 +14,10 @@ export class FinalizationWorker {
   constructor(private readonly options: FinalizationWorkerOptions) {}
 
   // Closes due auctions one transaction at a time until none is left, or the
-  // signal aborts between two closes, and returns how many it closed. A
-  // failure throws and leaves the failed auction unclosed, so the next call
-  // claims it again.
+  // signal aborts between two closes, and returns how many it closed. An
+  // auction that cannot be closed is logged and passed over until its
+  // scheduled retry, so it never holds up the others. Only a failure to reach
+  // or write the database throws.
   async drain(signal?: AbortSignal): Promise<number> {
     let closed = 0;
 

@@ -47,9 +47,10 @@ closed_at IS NULL AND ends_at <= (SELECT clock_timestamp())`, and not waiting
    other event.
 
 Steps 2 to 4 run inside `SAVEPOINT close_attempt`, followed by
-`SET CONSTRAINTS ALL IMMEDIATE`. That makes the deferred "every version has an
-outbox event" check fire inside the savepoint, so even that failure is handled
-as a failed close instead of failing the commit.
+`SET CONSTRAINTS auctions_version_outbox_event IMMEDIATE`. That makes the
+deferred "every version has an outbox event" check fire inside the savepoint,
+so even that failure is handled as a failed close (see
+[Failed closes](#failed-closes)) instead of failing the commit.
 
 A close is therefore all-or-nothing, and each auction is closed exactly once:
 a second finalizer finds `closed_at` set, so the claim query no longer returns
@@ -76,8 +77,9 @@ auction and commits:
 The record commits although the close does not. Nothing else changes: not
 `version`, `updated_at`, `closed_at` or the outcome. No version trigger fires,
 and no outbox event is written or needed. These columns are retry bookkeeping,
-like the outbox's publication state, not aggregate state; the API does not
-expose them.
+like the outbox's publication state, not aggregate state, and the API does not
+expose them. The claim only looks at open auctions, so a retry time left on an
+auction that has since closed is never read.
 
 The claim and the unlocked pre-check skip an auction until its
 `next_finalization_attempt_at`, so it neither blocks the auctions behind it nor
@@ -91,13 +93,13 @@ Retries are unbounded and the delay is capped (`FINALIZER_AUCTION_RETRY_MAX_DELA
 five minutes by default, longer than the loop's own cap because an auction that
 keeps failing needs a repair, not a quick retry). There is no dead-letter and no
 alert beyond the log line. The auction stays `awaiting_finalization`, which
-refuses bids, so it is late but never wrong. A successful close sets
-`next_finalization_attempt_at` back to null (a CHECK forbids a scheduled retry on
-a closed or cancelled auction) and keeps the attempt count and last error as
-history.
+refuses bids, so it is late but never wrong. A successful close keeps the
+attempt count and last error as history.
 
-Only a failure to record the failure, usually a lost connection, fails the
-whole cycle. The loop then backs off as for any database outage.
+Errors outside the savepoint (the pre-check, `BEGIN`, the claim, `COMMIT`, a
+lost connection) and a failure to record the failure fail the whole cycle
+instead. Nothing is recorded on an auction then; the loop logs `auction
+finalization failed` and backs off as for any database outage.
 
 To find stuck auctions:
 
@@ -116,9 +118,11 @@ immediately with
 That needs no version step or event. Never close an auction by hand: the
 triggers reject a close without its version step and event.
 
-Each claim has to look past the poisoned auctions that are waiting for their
-retry, so the cost of a claim grows with their number; the same is true of
-the outbox publisher's backed-off heads.
+The retry clause is a filter on the heap row, not part of the index, so every
+claim and pre-check looks past the poisoned auctions that are waiting for their
+retry: the cost of a poll grows with their number. That is cheap for a handful
+of stuck auctions; if many accumulate, a partial index for healthy auctions is
+the next step.
 
 ## Unsold is a result
 
@@ -153,6 +157,7 @@ stays as an independent second layer.
 | A bid is in flight at the deadline                | If the bid holds the row lock, the finalizer skips the auction and closes it after the bid commits or rolls back, naming the highest accepted bid. The bid itself is checked against the deadline under the same lock, so a bid arriving after `ends_at` is rejected with `auction_not_open`. |
 | A finalizer stalls holding a lock                 | `idle_in_transaction_session_timeout` (30 s) ends its session and releases the row.                                                                                                                                                                                                           |
 | The finalizer is down or behind                   | The auction stays in the derived `awaiting_finalization` phase, which already refuses bids. Closing is late, never wrong; the backlog drains in deadline order when a finalizer returns.                                                                                                      |
+| PostgreSQL unavailable                            | The cycle fails and the loop retries with capped exponential backoff with jitter (`FINALIZER_RETRY_*`). Nothing is recorded on an auction.                                                                                                                                                    |
 | One auction's close keeps failing                 | Each failure is recorded on the auction and the auction is skipped until its scheduled retry (see [Failed closes](#failed-closes)). Auctions due after it close normally.                                                                                                                     |
 | Database clock differs from the application clock | Only database time is used, both for the claim and for the stamp, so every finalizer agrees.                                                                                                                                                                                                  |
 

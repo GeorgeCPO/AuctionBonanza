@@ -79,7 +79,7 @@ describe("FinalizationWorker", () => {
         auctionId: "7",
         attempt: 2,
         retryDelayMs: 4_000,
-        error: "Error: poisoned",
+        error: new Error("poisoned"),
       },
       sold,
     ]);

@@ -5,7 +5,7 @@ import { AUCTION_CLOSED_V1_EVENT_TYPE, parseAuctionClosedV1 } from "@auction-bon
 import { rollbackQuietly, toError, type Database, type DatabaseClient } from "../database.js";
 import { insertOutboxEvent } from "../outbox/outbox.store.js";
 import { backoffDelayMs } from "../shared/backoff.js";
-import { describeError } from "../shared/errors.js";
+import { describeStoredError } from "../shared/errors.js";
 import type {
   FinalizationOutcome,
   FinalizationRepository,
@@ -22,8 +22,6 @@ interface ClaimedAuctionRow extends Record<string, unknown> {
   observed_at_text: string;
 }
 
-const MAX_ERROR_LENGTH = 1_000;
-
 // The due-auction predicate, shared by the cheap pre-check and the locking
 // claim so they cannot drift apart. An auction whose close failed is not due
 // again until its scheduled retry time.
@@ -33,6 +31,10 @@ const MAX_ERROR_LENGTH = 1_000;
 // cannot be an index condition: every poll would then walk the whole pending
 // index. As written, the `ends_at` bound is an index condition on
 // auctions_pending_finalization_idx and healthy auctions keep deadline order.
+//
+// `auctions.id` is qualified on purpose: the claim selects `id::text AS id`,
+// and a bare `id` in ORDER BY would bind to that text column and sort ids
+// lexicographically.
 const DUE_AUCTIONS = `
   FROM auctions
   WHERE cancelled_at IS NULL
@@ -42,7 +44,7 @@ const DUE_AUCTIONS = `
       next_finalization_attempt_at IS NULL
       OR next_finalization_attempt_at <= (SELECT clock_timestamp())
     )
-  ORDER BY ends_at, id
+  ORDER BY ends_at, auctions.id
   LIMIT 1`;
 
 // Closes auctions whose deadline has passed. Each call is one transaction for
@@ -100,7 +102,6 @@ export class PostgresFinalizationRepository implements FinalizationRepository {
       let outcome: FinalizationOutcome;
       try {
         outcome = await this.close(client, claimed.id);
-        await client.query("RELEASE SAVEPOINT close_attempt");
       } catch (closeError) {
         outcome = await this.recordCloseFailure(client, claimed.id, closeError);
       }
@@ -153,16 +154,13 @@ export class PostgresFinalizationRepository implements FinalizationRepository {
     }
 
     // The text form keeps microsecond precision; node-pg would truncate a Date
-    // to milliseconds, which could put closed_at before ends_at. A closed
-    // auction is never scheduled for another attempt, but keeps its attempt
-    // count and last error as history.
+    // to milliseconds, which could put closed_at before ends_at.
     const closeResult = await client.query(
       `UPDATE auctions
        SET closed_at = $1::timestamptz,
            winning_bid_id = leading_bid_id,
            version = version + 1,
-           updated_at = $1::timestamptz,
-           next_finalization_attempt_at = NULL
+           updated_at = $1::timestamptz
        WHERE id = $2
        RETURNING version::text AS version`,
       [auction.observed_at_text, auction.id],
@@ -188,7 +186,7 @@ export class PostgresFinalizationRepository implements FinalizationRepository {
     // The "version has an outbox event" check is deferred to COMMIT. Running
     // it now makes a violation fail inside the savepoint, where it is
     // recorded like any other close failure, instead of failing the commit.
-    await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+    await client.query("SET CONSTRAINTS auctions_version_outbox_event IMMEDIATE");
 
     return {
       kind: "closed",
@@ -201,13 +199,12 @@ export class PostgresFinalizationRepository implements FinalizationRepository {
   // Undoes the failed close and schedules the next attempt. Only the retry
   // bookkeeping is written: the version, the timestamps and the outcome are
   // untouched, so no version trigger fires and no outbox event is needed.
-  // Retry times use database time, like every other time-sensitive decision.
+  // The claim's lock is still held, so the row cannot have changed.
   private async recordCloseFailure(
     client: DatabaseClient,
     auctionId: string,
     closeError: unknown,
   ): Promise<FinalizationOutcome> {
-    const error = describeError(closeError).slice(0, MAX_ERROR_LENGTH);
     try {
       await client.query("ROLLBACK TO SAVEPOINT close_attempt");
 
@@ -222,24 +219,24 @@ export class PostgresFinalizationRepository implements FinalizationRepository {
       const attempt = attemptsRow.finalization_attempts + 1;
       const retryDelayMs = backoffDelayMs(this.options.retryBackoff, attempt, this.options.random);
 
-      const recorded = await client.query(
+      // The retry time is on the database clock, like every other
+      // time-sensitive decision.
+      await client.query(
         `UPDATE auctions
          SET finalization_attempts = $2,
              next_finalization_attempt_at =
                clock_timestamp() + $3::double precision * interval '1 millisecond',
              last_finalization_error = $4
-         WHERE id = $1 AND closed_at IS NULL AND cancelled_at IS NULL`,
-        [auctionId, attempt, retryDelayMs, error],
+         WHERE id = $1`,
+        [auctionId, attempt, retryDelayMs, describeStoredError(closeError)],
       );
-      if (recorded.rowCount !== 1) {
-        throw new Error("Failed close was not recorded");
-      }
-      return { kind: "close_failed", auctionId, attempt, retryDelayMs, error };
+      return { kind: "close_failed", auctionId, attempt, retryDelayMs, error: toError(closeError) };
     } catch (recordError) {
       // The failure could not be recorded, usually because the connection is
-      // gone. The whole cycle fails and the loop backs off.
+      // gone. The whole cycle fails and the loop backs off. The close error
+      // is kept in the message: it is the only trace of what went wrong.
       throw new Error(
-        `Recording the failed close of auction ${auctionId} failed (close error: ${error})`,
+        `Recording the failed close of auction ${auctionId} failed (close error: ${describeStoredError(closeError)})`,
         { cause: recordError },
       );
     }
