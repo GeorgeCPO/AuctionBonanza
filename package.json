@@ -15,10 +15,12 @@
     "lint:fix": "oxlint --fix",
     "test": "pnpm run test:unit",
     "test:unit": "pnpm --recursive --if-present run test:unit",
+    "test:unit:coverage": "pnpm --recursive --if-present run test:unit:coverage",
     "test:integration": "pnpm --recursive --if-present run test:integration",
+    "test:integration:coverage": "pnpm --recursive --if-present run test:integration:coverage",
     "test:e2e": "pnpm --filter @auction-bonanza/e2e-tests run test:e2e",
     "typecheck": "pnpm --recursive --if-present run typecheck",
-    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:unit && pnpm run build",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:unit:coverage && pnpm run build",
     "check:all": "pnpm run check && pnpm run test:integration && pnpm run test:e2e"
   },
   "devDependencies": {

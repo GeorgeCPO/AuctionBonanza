@@ -17,5 +17,15 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/integration/**/*.test.ts"],
+    // Informational: nothing fails on a low number (see docs/TESTING.md). Only
+    // code that runs inside the Vitest process is measured, not the services
+    // the *-process tests start.
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      exclude: ["src/**/*.types.ts"],
+      reporter: ["text", "html", "lcov"],
+      reportsDirectory: "coverage/integration",
+    },
   },
 });
