@@ -65,16 +65,17 @@ variable missing there fails the run instead of being filled in.
 
 Variables each tier needs:
 
-| Workspace          | Variables                                                                        |
-| ------------------ | -------------------------------------------------------------------------------- |
-| `auction-service`  | `TEST_DATABASE_URL`, `TEST_KAFKA_BROKERS`, `TEST_KAFKA_FAULT_INJECTION_UPSTREAM` |
-| `identity-service` | `TEST_DATABASE_URL`                                                              |
-| `realtime-gateway` | `TEST_KAFKA_BROKERS`, `TEST_VALKEY_NODES`, `TEST_VALKEY_TOPOLOGY_NODES`          |
-| `tests/e2e`        | `TEST_DATABASE_URL`, `TEST_KAFKA_BROKERS`, `TEST_VALKEY_NODES`                   |
+| Workspace            | Variables                                                                        |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `auction-service`    | `TEST_DATABASE_URL`, `TEST_KAFKA_BROKERS`, `TEST_KAFKA_FAULT_INJECTION_UPSTREAM` |
+| `identity-service`   | `TEST_DATABASE_URL`                                                              |
+| `realtime-gateway`   | `TEST_KAFKA_BROKERS`, `TEST_VALKEY_NODES`, `TEST_VALKEY_TOPOLOGY_NODES`          |
+| `settlement-service` | `TEST_DATABASE_URL`, `TEST_KAFKA_BROKERS`                                        |
+| `tests/e2e`          | `TEST_DATABASE_URL`, `TEST_KAFKA_BROKERS`, `TEST_VALKEY_NODES`                   |
 
-The outbox publisher, finalizer and end-to-end tests create and drop their own
-temporary databases from `db/schema.sql` (the database user needs `CREATEDB`),
-and their own Kafka topics. The Kafka outage test runs a TCP proxy on port
+The outbox publisher, finalizer, settlement and end-to-end tests create and drop
+their own temporary databases from `db/schema.sql` (the database user needs
+`CREATEDB`), and their own Kafka topics. The Kafka outage test runs a TCP proxy on port
 `19092`, which must be free; it reaches the broker through the test-only
 `FAULT_INJECTION` listener on `19093`.
 

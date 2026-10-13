@@ -15,6 +15,11 @@ root `docker-compose.yml`. Nothing here imports a service's code.
   whose deadline has passed, and the SSE client sees the closed auction with
   its winner.
 
+- `test/settlement.test.ts`: a closed auction becomes an order for its winner,
+  through the auction-service API, finalizer and outbox publisher, Kafka, and
+  the settlement worker. An auction that closes unsold becomes no order. It needs
+  no relay, edge or Valkey.
+
 Each run uses its own database (created from `db/schema.sql`), Kafka topic and
 consumer group, and auction ids far from other tests' Valkey channels.
 
