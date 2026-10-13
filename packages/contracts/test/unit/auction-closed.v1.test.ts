@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   AUCTION_CLOSED_V1_EVENT_TYPE,
+  EVENT_ID_HEADER,
+  EVENT_TYPE_HEADER,
+  findAuctionClosedV1Violation,
   isAuctionClosedV1,
   parseAuctionClosedV1,
 } from "../../src/index.js";
@@ -42,5 +45,50 @@ describe("AuctionClosed.v1", () => {
   ])("rejects %s", (_label, candidate) => {
     expect(isAuctionClosedV1(candidate)).toBe(false);
     expect(() => parseAuctionClosedV1(candidate)).toThrow(TypeError);
+  });
+
+  describe("findAuctionClosedV1Violation", () => {
+    it.each([
+      ["sold", soldEvent],
+      ["unsold", unsoldEvent],
+    ])("finds nothing wrong with a %s auction", (_label, event) => {
+      expect(findAuctionClosedV1Violation(event)).toBeUndefined();
+    });
+
+    it.each([
+      ["a malformed id", { ...soldEvent, auctionId: "0042" }, "/auctionId"],
+      ["a missing field", { ...soldEvent, currencyCode: undefined }, "/currencyCode"],
+      ["an additional field", { ...soldEvent, closedAt: "2026-10-12T09:15:30Z" }, "/closedAt"],
+      ["a payload that is not an object", "just a string", "/"],
+    ])("names the schema rule broken by %s", (_label, candidate, path) => {
+      expect(findAuctionClosedV1Violation(candidate)).toContain(path);
+    });
+
+    it("names the timestamp when the schema accepts it but the date does not exist", () => {
+      expect(
+        findAuctionClosedV1Violation({ ...soldEvent, occurredAt: "2026-02-29T09:15:30Z" }),
+      ).toBe("/occurredAt: is not a real UTC timestamp");
+    });
+
+    it.each([
+      ["a winner without an amount", { ...soldEvent, finalAmountMinor: null }],
+      ["an amount without a winner", { ...unsoldEvent, finalAmountMinor: "100" }],
+    ])("names the outcome rule broken by %s", (_label, candidate) => {
+      expect(findAuctionClosedV1Violation(candidate)).toBe(
+        "/winningBidId, /winnerId and /finalAmountMinor: must be all set or all null",
+      );
+    });
+
+    it("puts the broken rule in the error that parseAuctionClosedV1 throws", () => {
+      expect(() => parseAuctionClosedV1({ ...soldEvent, finalAmountMinor: null })).toThrow(
+        "Value does not satisfy the AuctionClosed.v1 contract: /winningBidId, /winnerId",
+      );
+    });
+  });
+
+  describe("event headers", () => {
+    it("are the names the outbox publisher has always sent", () => {
+      expect([EVENT_TYPE_HEADER, EVENT_ID_HEADER]).toEqual(["event-type", "event-id"]);
+    });
   });
 });

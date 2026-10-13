@@ -32,17 +32,33 @@ export const AuctionClosedV1Schema = Type.Object(
 
 export type AuctionClosedV1 = Static<typeof AuctionClosedV1Schema>;
 
+// The first rule a value breaks, named so a person can act on it, or undefined
+// when the value is a valid AuctionClosed.v1. The schema's own complaint comes
+// first, then the two rules a schema cannot express: a real timestamp, and an
+// outcome that is sold or unsold, never half of each.
+export function findAuctionClosedV1Violation(value: unknown): string | undefined {
+  if (!Value.Check(AuctionClosedV1Schema, value)) {
+    // A value that fails the check always yields at least one error.
+    const first = Value.Errors(AuctionClosedV1Schema, value).First()!;
+    return `${first.path === "" ? "/" : first.path}: ${first.message}`;
+  }
+  if (!isValidOccurredAt(value.occurredAt)) {
+    return "/occurredAt: is not a real UTC timestamp";
+  }
+  if (!hasConsistentOutcome(value)) {
+    return "/winningBidId, /winnerId and /finalAmountMinor: must be all set or all null";
+  }
+  return undefined;
+}
+
 export function isAuctionClosedV1(value: unknown): value is AuctionClosedV1 {
-  return (
-    Value.Check(AuctionClosedV1Schema, value) &&
-    isValidOccurredAt(value.occurredAt) &&
-    hasConsistentOutcome(value)
-  );
+  return findAuctionClosedV1Violation(value) === undefined;
 }
 
 export function parseAuctionClosedV1(value: unknown): AuctionClosedV1 {
   if (!isAuctionClosedV1(value)) {
-    throw new TypeError("Value does not satisfy the AuctionClosed.v1 contract");
+    const violation = findAuctionClosedV1Violation(value);
+    throw new TypeError(`Value does not satisfy the AuctionClosed.v1 contract: ${violation}`);
   }
   return value;
 }

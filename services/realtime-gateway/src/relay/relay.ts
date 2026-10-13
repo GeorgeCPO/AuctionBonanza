@@ -1,3 +1,4 @@
+import { EVENT_ID_HEADER, EVENT_TYPE_HEADER } from "@auction-bonanza/contracts";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import type { Logger } from "pino";
 
@@ -98,7 +99,7 @@ export class EventRelay {
       const decision = decideRelay({
         key,
         value: message.value?.toString("utf8") ?? null,
-        eventType: headerValue(message.headers, "event-type"),
+        eventType: headerValue(message.headers, EVENT_TYPE_HEADER),
       });
       if (decision.kind === "publish") {
         await this.options.publisher.publish(decision.channel, decision.message);
@@ -107,7 +108,7 @@ export class EventRelay {
           partition,
           offset: message.offset,
           key,
-          eventId: headerValue(message.headers, "event-id"),
+          eventId: headerValue(message.headers, EVENT_ID_HEADER),
         });
       }
       this.failures.delete(partition);
