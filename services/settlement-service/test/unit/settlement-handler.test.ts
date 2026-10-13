@@ -70,7 +70,10 @@ describe("SettlementHandler", () => {
 
       expect(outcome).toEqual({ kind: "settled", outcome: { kind: "duplicate" } });
       expect(deadLetters.published).toEqual([]);
-      expect(messages()).toContain(SETTLEMENT_LOG_MESSAGES.duplicate);
+      // Debug, not info: replaying history repeats every close already settled.
+      expect(log.lines).toContainEqual(
+        expect.objectContaining({ level: 20, msg: SETTLEMENT_LOG_MESSAGES.duplicate }),
+      );
     });
   });
 
@@ -86,6 +89,28 @@ describe("SettlementHandler", () => {
       expect(outcome).toEqual({ kind: "ignored", eventType: "BidAccepted.v1" });
       expect(repository.settled).toEqual([]);
       expect(deadLetters.published).toEqual([]);
+      // Bids are expected, so they are noted only at debug level.
+      expect(log.lines).toContainEqual(
+        expect.objectContaining({ level: 20, msg: SETTLEMENT_LOG_MESSAGES.ignored }),
+      );
+    });
+
+    it("warns about a type it does not know, because a close under a new name would be lost", async () => {
+      const event = soldEvent();
+      const record = recordOf(event, { eventType: "AuctionClosed.v2" });
+
+      const outcome = await handler.handle(record);
+
+      expect(outcome).toEqual({ kind: "ignored", eventType: "AuctionClosed.v2" });
+      expect(repository.settled).toEqual([]);
+      expect(deadLetters.published).toEqual([]);
+      expect(log.lines).toContainEqual(
+        expect.objectContaining({
+          level: 40,
+          msg: SETTLEMENT_LOG_MESSAGES.unknownEventType,
+          eventType: "AuctionClosed.v2",
+        }),
+      );
     });
   });
 
@@ -134,6 +159,32 @@ describe("SettlementHandler", () => {
         [DEAD_LETTER_HEADERS.detail]:
           "PermanentSettlementError: order does not match the winning bid " +
           "[SQLSTATE 23514, constraint orders_terms_match_winning_bid]",
+      });
+    });
+  });
+
+  describe("a database refusal that names no SQLSTATE", () => {
+    it.each([
+      [
+        "a constraint",
+        { sqlState: undefined, constraint: "settlement_unsold_matches_auction" },
+        "PermanentSettlementError: contradicted [constraint settlement_unsold_matches_auction]",
+      ],
+      [
+        "nothing",
+        { sqlState: undefined, constraint: undefined },
+        "PermanentSettlementError: contradicted",
+      ],
+    ])("describes it by %s without inventing one", async (_description, details, expected) => {
+      repository.outcome = () => {
+        throw new PermanentSettlementError("contradicted", details);
+      };
+
+      await handler.handle(recordOf(soldEvent()));
+
+      expect(deadLetters.published[0]?.headers).toMatchObject({
+        [DEAD_LETTER_HEADERS.reason]: "database-rejected",
+        [DEAD_LETTER_HEADERS.detail]: expected,
       });
     });
   });

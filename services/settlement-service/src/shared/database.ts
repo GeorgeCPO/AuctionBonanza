@@ -1,42 +1,11 @@
 import { Pool } from "pg";
 
+import type { DatabaseClient, DatabasePool, DatabasePoolSettings } from "./database.types.js";
+
 // The same thin layer over `pg` as auction-service's database.ts, copied and
 // trimmed to what the settlement worker uses: every statement runs on a
 // checked-out client, because every statement belongs to a transaction. The
 // transaction stays explicit (`BEGIN` / `COMMIT`) in the repository.
-
-export type QueryResult = Readonly<{
-  rows: Record<string, unknown>[];
-}>;
-
-export interface Database {
-  connect(): Promise<DatabaseClient>;
-}
-
-export interface DatabaseClient {
-  query(text: string, values?: readonly unknown[]): Promise<QueryResult>;
-  // Passing an error destroys the connection instead of returning it to the
-  // pool, for clients whose session or transaction state is unknown.
-  release(error?: Error): void;
-}
-
-export interface DatabasePool extends Database {
-  end(): Promise<void>;
-}
-
-export interface DatabasePoolSettings {
-  connectionString: string;
-  maxConnections: number;
-  applicationName?: string;
-  keepAlive?: boolean;
-  // Session limits PostgreSQL enforces on the server for every connection.
-  statementTimeoutMs?: number;
-  lockTimeoutMs?: number;
-  idleInTransactionSessionTimeoutMs?: number;
-  // Errors from idle pooled connections. pg emits them as 'error' events,
-  // which would crash the process without a listener.
-  onIdleClientError: (error: Error) => void;
-}
 
 export function createDatabasePool(settings: DatabasePoolSettings): DatabasePool {
   const pool = new Pool({

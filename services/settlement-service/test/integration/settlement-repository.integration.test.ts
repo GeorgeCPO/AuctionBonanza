@@ -6,11 +6,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { PermanentSettlementError } from "../../src/settlement.errors.js";
 import { PostgresSettlementRepository } from "../../src/settlement.repository.js";
-import { wrapPool, type Database } from "../../src/shared/database.js";
+import { wrapPool } from "../../src/shared/database.js";
+import type { Database } from "../../src/shared/database.types.js";
 import { AuctionFixtures } from "../support/auction-fixtures.js";
 import { requireEnvironment } from "../support/environment.js";
 import { InterceptingDatabase } from "../support/intercepting-database.js";
-import { createIsolatedDatabase, type IsolatedDatabase } from "../support/isolated-database.js";
+import { createIsolatedDatabase } from "../support/isolated-database.js";
+import type { IsolatedDatabase } from "../support/isolated-database.types.js";
 
 const adminDatabaseUrl = requireEnvironment("TEST_DATABASE_URL");
 
@@ -170,6 +172,32 @@ describe("settlement with PostgreSQL", () => {
       expect(await fixtures.orders()).toEqual([]);
     });
 
+    it("is a permanent failure for an 'unsold' event about an auction that was sold", async () => {
+      const { event } = await fixtures.soldAuction(ownerId, bidderId);
+      const forged = { ...event, winningBidId: null, winnerId: null, finalAmountMinor: null };
+
+      const refusal = await refusalOf(repository.settle(forged));
+
+      // No database error exists to quote: settlement itself found the event
+      // contradicted by the auction's recorded outcome.
+      expect(refusal).toMatchObject({
+        sqlState: undefined,
+        constraint: "settlement_unsold_matches_auction",
+      });
+      // The refused event was not recorded as handled, so the real one, with
+      // its own id, still settles the sale.
+      expect(await fixtures.processedEventIds()).toEqual([]);
+      expect(await repository.settle(event)).toMatchObject({ kind: "order_created" });
+    });
+
+    it("is a permanent failure for an 'unsold' event about an auction that does not exist", async () => {
+      const event = await fixtures.unsoldAuction(ownerId);
+
+      const refusal = await refusalOf(repository.settle({ ...event, auctionId: "987654321" }));
+
+      expect(refusal.constraint).toBe("settlement_unsold_matches_auction");
+    });
+
     it("is a permanent failure for an id too large for the database", async () => {
       const { event } = await fixtures.soldAuction(ownerId, bidderId);
 
@@ -275,7 +303,8 @@ describe("settlement with PostgreSQL", () => {
         if (result.rows.length === 0) {
           return;
         }
-        if (Date.now() > deadline) {
+        const now = Date.now();
+        if (now > deadline) {
           throw new Error(`backend ${pid} did not exit`);
         }
         await delay(10);

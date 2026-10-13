@@ -175,7 +175,7 @@ The two settlement migrations are owned by `settlement-service` (see
 records each event the worker has handled, keyed by `event_id`, so a redelivered
 event is recognised. `orders` holds one row per sold auction and is guarded by
 the database itself: `UNIQUE (auction_id)`, a composite foreign key to the
-winning bid, and a `BEFORE INSERT` trigger that requires a closed auction and
+winning bid, a composite foreign key to the processed event of the same auction, and a `BEFORE INSERT` trigger that requires a closed auction and
 checks the order's winning bid, buyer, price and currency against the auction's
 recorded outcome (`check_violation` with a named constraint, in the style of
 `auction_require_winner_on_close`). A second trigger rejects any change to an

@@ -5,8 +5,12 @@
 // keeps its own copy of the one message it waits for.
 export const SETTLEMENT_LOG_MESSAGES = {
   started: "settlement started",
+  failedToStart: "settlement failed to start",
   shutdownRequested: "shutdown requested; finishing in-flight messages",
   stopped: "settlement stopped",
+  ignored: "ignoring auction event that settlement does not handle",
+  unknownEventType:
+    "ignoring auction event of a type settlement does not know; if it is a close, no order is created",
   orderCreated: "order created",
   unsoldRecorded: "auction closed unsold; nothing to settle",
   duplicate: "event already settled; ignoring the repeat delivery",

@@ -1,10 +1,5 @@
-import type { Database, DatabaseClient, QueryResult } from "../../src/shared/database.js";
-
-// What an interceptor is given for each query on a checked-out client.
-export type QueryInterceptor = (
-  text: string,
-  client: DatabaseClient,
-) => Promise<QueryResult | undefined> | undefined;
+import type { Database, DatabaseClient } from "../../src/shared/database.types.js";
+import type { QueryInterceptor } from "./intercepting-database.types.js";
 
 // A database that behaves like `inner` except that `intercept` may answer a
 // query itself, or run it and then fail: return a result to replace the real

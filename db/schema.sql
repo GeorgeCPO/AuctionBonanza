@@ -548,6 +548,14 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: settlement_processed_events settlement_processed_events_event_id_auction_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.settlement_processed_events
+    ADD CONSTRAINT settlement_processed_events_event_id_auction_id_key UNIQUE (event_id, auction_id);
+
+
+--
 -- Name: settlement_processed_events settlement_processed_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -780,7 +788,7 @@ ALTER TABLE ONLY public.orders
 --
 
 ALTER TABLE ONLY public.orders
-    ADD CONSTRAINT orders_source_event_id_fkey FOREIGN KEY (source_event_id) REFERENCES public.settlement_processed_events(event_id);
+    ADD CONSTRAINT orders_source_event_id_fkey FOREIGN KEY (source_event_id, auction_id) REFERENCES public.settlement_processed_events(event_id, auction_id);
 
 
 --

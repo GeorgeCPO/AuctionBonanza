@@ -1,9 +1,5 @@
-import type { Database, DatabaseClient, QueryResult } from "../../src/shared/database.js";
-
-export interface RecordedQuery {
-  text: string;
-  values: readonly unknown[] | undefined;
-}
+import type { Database, DatabaseClient, QueryResult } from "../../src/shared/database.types.js";
+import type { RecordedQuery } from "./fake-database.types.js";
 
 // A database that answers from a script and remembers what it was asked and
 // how each client was handed back. Enough to test the shape of a transaction

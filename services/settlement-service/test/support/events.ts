@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { AuctionClosedV1 } from "@auction-bonanza/contracts";
 
 import type { ConsumedRecord } from "../../src/consumed-record.types.js";
+import type { RecordOptions } from "./events.types.js";
 
 // A sold AuctionClosed.v1 with made-up ids. Tests that need ids that exist in
 // a database build their own.
@@ -37,17 +38,6 @@ export function bidAcceptedPayload(auctionId: string, version: number): object {
     amountMinor: String(100 * version),
     currencyCode: "USD",
   };
-}
-
-export interface RecordOptions {
-  // Defaults to the event's auctionId, as the outbox publisher sets it.
-  key?: string | null;
-  // Defaults to the event's type and id. A header set to undefined is absent.
-  eventType?: string | undefined;
-  eventId?: string | undefined;
-  value?: string | null;
-  partition?: number;
-  offset?: string;
 }
 
 // A consumed record shaped like the outbox publisher's messages: key

@@ -1,16 +1,18 @@
 // A failure that retrying cannot fix: the database refused this event's data,
-// and will refuse it again. It is reported apart from every other error because
-// the two get opposite treatment. A transient error (the database is down, a
+// or its recorded state contradicts the event, and will do so again. It is
+// reported apart from every other error because the two get opposite treatment. A transient error (the database is down, a
 // deadlock, a timeout) is retried until it clears. A permanent one goes to the
 // dead-letter topic, so one bad record cannot stall every auction on its
 // partition.
 export class PermanentSettlementError extends Error {
-  readonly sqlState: string;
+  // The SQLSTATE PostgreSQL raised. Undefined when settlement itself found the
+  // event contradicted by the data, so no database error exists to quote.
+  readonly sqlState: string | undefined;
   readonly constraint: string | undefined;
 
   constructor(
     message: string,
-    details: { sqlState: string; constraint: string | undefined },
+    details: { sqlState: string | undefined; constraint: string | undefined },
     options?: ErrorOptions,
   ) {
     super(message, options);

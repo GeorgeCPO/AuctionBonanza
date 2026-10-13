@@ -1,19 +1,14 @@
-import { randomInt, randomUUID } from "node:crypto";
+import { randomInt } from "node:crypto";
 
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { AuctionApi, ProcessGroup, startAuctionService } from "./support/auction-stack.js";
 import { requireEnvironment } from "./support/environment.js";
 import { createIsolatedDatabase } from "./support/isolated-database.js";
 import type { IsolatedDatabase } from "./support/isolated-database.types.js";
 import { TestTopic } from "./support/kafka.js";
-import {
-  auctionServiceRoot,
-  compileService,
-  freePort,
-  settlementServiceRoot,
-  startServiceProcess,
-} from "./support/services.js";
+import { auctionServiceRoot, compileService, settlementServiceRoot } from "./support/services.js";
 import type { CompiledService, ServiceProcess } from "./support/services.types.js";
 import { startTestIssuer } from "./support/test-issuer.js";
 import type { TestIssuer } from "./support/test-issuer.types.js";
@@ -41,8 +36,9 @@ describe("settlement, end to end", { timeout: 180_000 }, () => {
   let issuer: TestIssuer | undefined;
   let events: TestTopic | undefined;
   let deadLetters: TestTopic | undefined;
-  const processes: ServiceProcess[] = [];
+  const processes = new ProcessGroup();
   let settlement: ServiceProcess;
+  let api: AuctionApi;
   let apiUrl: string;
 
   beforeAll(async () => {
@@ -62,26 +58,14 @@ describe("settlement, end to end", { timeout: 180_000 }, () => {
     // that pool.end() asked to close but the server has not processed yet.
     pool.on("error", () => {});
 
-    const api = start(auctionService, "index.js", {
-      HOST: "127.0.0.1",
-      PORT: String(await freePort()),
-      DATABASE_URL: database.url,
-      AUTH_ISSUER: issuer.issuer,
-      AUTH_AUDIENCE: issuer.audience,
-      AUTH_JWKS_URL: issuer.jwksUrl,
+    apiUrl = await startAuctionService(processes, auctionService, {
+      databaseUrl: database.url,
+      issuer,
+      kafkaBrokers,
+      topic: events.name,
     });
-    apiUrl = /http:\/\/\S+/.exec(String((await api.waitForLog("Server listening at")).msg))![0];
-    start(auctionService, "outbox-publisher.main.js", {
-      DATABASE_URL: database.url,
-      KAFKA_BROKERS: kafkaBrokers,
-      AUCTION_EVENTS_TOPIC: events.name,
-      OUTBOX_POLL_INTERVAL_MS: "100",
-    });
-    start(auctionService, "finalizer.main.js", {
-      DATABASE_URL: database.url,
-      FINALIZER_POLL_INTERVAL_MS: "100",
-    });
-    settlement = start(settlementService, "settlement.main.js", {
+    api = new AuctionApi({ apiUrl, pool, issuer });
+    settlement = processes.start(settlementService, "settlement.main.js", {
       DATABASE_URL: database.url,
       KAFKA_BROKERS: kafkaBrokers,
       KAFKA_GROUP_ID: events.groupId,
@@ -94,7 +78,7 @@ describe("settlement, end to end", { timeout: 180_000 }, () => {
   afterAll(async () => {
     // The settlement worker must leave its group before the group can be
     // deleted.
-    await Promise.all(processes.map((child) => child.stop()));
+    await processes.stopAll();
     await Promise.all([
       events?.remove(),
       deadLetters?.remove(),
@@ -107,76 +91,6 @@ describe("settlement, end to end", { timeout: 180_000 }, () => {
       })(),
     ]);
   });
-
-  function start(
-    service: CompiledService,
-    entryFile: string,
-    environment: Record<string, string>,
-  ): ServiceProcess {
-    const child = startServiceProcess(service, entryFile, environment);
-    processes.push(child);
-    return child;
-  }
-
-  async function insertUser(): Promise<string> {
-    const result = await pool!.query<{ id: string }>(
-      `INSERT INTO users (email, username, password_hash)
-       VALUES ($1, 'End to end', '$argon2id$test')
-       RETURNING id::text`,
-      [`e2e-${randomUUID()}@example.com`],
-    );
-    return result.rows[0]!.id;
-  }
-
-  async function post(path: string, userId: string, body: unknown): Promise<Response> {
-    return fetch(`${apiUrl}${path}`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${issuer!.accessToken(userId)}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-  }
-
-  async function createAuction(ownerId: string): Promise<string> {
-    const created = await post("/v1/auctions", ownerId, {
-      title: "Settlement lot",
-      description: "Closed, then settled.",
-      currencyCode: "USD",
-      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
-      startingPriceMinor: "1000",
-      minimumBidIncrementMinor: "100",
-    });
-    expect(created.status).toBe(201);
-    return ((await created.json()) as { id: string }).id;
-  }
-
-  async function placeBid(
-    auctionId: string,
-    bidderId: string,
-    amountMinor: string,
-  ): Promise<string> {
-    const placed = await post(`/v1/auctions/${auctionId}/bids`, bidderId, {
-      amountMinor,
-      idempotencyKey: randomUUID(),
-    });
-    expect(placed.status).toBe(201);
-    return ((await placed.json()) as { bid: { id: string } }).bid.id;
-  }
-
-  // Time cannot be waited for (an auction lasts at least a minute), so the
-  // deadline is moved into the past. Everything after that is the finalizer,
-  // the outbox publisher and the settlement worker acting on their own.
-  async function passDeadline(auctionId: string): Promise<void> {
-    await pool!.query(
-      `UPDATE auctions
-       SET starts_at = clock_timestamp() - interval '2 hours',
-           ends_at = clock_timestamp() - interval '1 second'
-       WHERE id = $1`,
-      [auctionId],
-    );
-  }
 
   async function handledEvents(auctionId: string): Promise<number> {
     const result = await pool!.query(
@@ -196,14 +110,14 @@ describe("settlement, end to end", { timeout: 180_000 }, () => {
   }
 
   it("turns a closed auction into one order for its winner", async () => {
-    const ownerId = await insertUser();
-    const bidderId = await insertUser();
-    const winnerId = await insertUser();
-    const auctionId = await createAuction(ownerId);
-    await placeBid(auctionId, bidderId, "1000");
-    const winningBidId = await placeBid(auctionId, winnerId, "1100");
+    const ownerId = await api.insertUser();
+    const bidderId = await api.insertUser();
+    const winnerId = await api.insertUser();
+    const auctionId = await api.createAuction(ownerId, "Settlement lot", "Closed, then settled.");
+    await api.placeBid(auctionId, bidderId, "1000");
+    const winningBidId = await api.placeBid(auctionId, winnerId, "1100");
 
-    await passDeadline(auctionId);
+    await api.passDeadline(auctionId);
     await waitFor(
       async () => (await ordersOf(auctionId)).length > 0,
       () => `an order for auction ${auctionId}\n${settlement.stdout()}`,
@@ -228,10 +142,10 @@ describe("settlement, end to end", { timeout: 180_000 }, () => {
   });
 
   it("settles an auction that closed unsold into no order", async () => {
-    const ownerId = await insertUser();
-    const auctionId = await createAuction(ownerId);
+    const ownerId = await api.insertUser();
+    const auctionId = await api.createAuction(ownerId, "Settlement lot", "Closed, then settled.");
 
-    await passDeadline(auctionId);
+    await api.passDeadline(auctionId);
     await waitFor(
       async () => (await handledEvents(auctionId)) > 0,
       () => `the unsold close of auction ${auctionId} handled\n${settlement.stdout()}`,

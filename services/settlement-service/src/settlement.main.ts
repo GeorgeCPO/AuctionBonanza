@@ -117,7 +117,7 @@ if (import.meta.main) {
       SETTLEMENT_LOG_MESSAGES.started,
     );
   } catch (error) {
-    logger.fatal({ err: error }, "settlement failed to start");
+    logger.fatal({ err: error }, SETTLEMENT_LOG_MESSAGES.failedToStart);
     process.exitCode = 1;
     await shutdown();
   }

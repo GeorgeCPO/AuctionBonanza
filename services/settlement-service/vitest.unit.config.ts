@@ -16,10 +16,9 @@ export default defineConfig({
       reportsDirectory: "coverage/unit",
       // One point below the values measured when these were set; raise them
       // when coverage rises, so a drop shows up as a failure (docs/TESTING.md).
-      // What the unit tier cannot reach (the Kafka consumer, the dead-letter
-      // producer, the database pool and the entry point) is covered by the
-      // integration tests.
-      thresholds: { statements: 56, branches: 71, functions: 47, lines: 56 },
+      // What the unit tier cannot reach (the Kafka consumer, the database pool
+      // and the entry point) is covered by the integration tests.
+      thresholds: { statements: 66, branches: 76, functions: 57, lines: 66 },
     },
   },
 });

@@ -1,6 +1,8 @@
 import {
   AUCTION_CLOSED_V1_EVENT_TYPE,
   BID_ACCEPTED_V1_EVENT_TYPE,
+  EVENT_ID_HEADER,
+  EVENT_TYPE_HEADER,
   parseAuctionClosedV1,
   parseBidAcceptedV1,
 } from "@auction-bonanza/contracts";
@@ -236,8 +238,8 @@ export class OutboxPublisher {
       key: event.auctionId,
       value: event.payloadJson,
       headers: {
-        "event-id": event.eventId,
-        "event-type": event.eventType,
+        [EVENT_ID_HEADER]: event.eventId,
+        [EVENT_TYPE_HEADER]: event.eventType,
         "content-type": "application/json",
       },
     };

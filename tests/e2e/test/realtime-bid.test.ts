@@ -1,20 +1,15 @@
-import { randomInt, randomUUID } from "node:crypto";
+import { randomInt } from "node:crypto";
 
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { AuctionApi, ProcessGroup, startAuctionService } from "./support/auction-stack.js";
 import { requireEnvironment } from "./support/environment.js";
 import { createIsolatedDatabase } from "./support/isolated-database.js";
 import type { IsolatedDatabase } from "./support/isolated-database.types.js";
 import { TestTopic } from "./support/kafka.js";
-import {
-  auctionServiceRoot,
-  compileService,
-  freePort,
-  gatewayRoot,
-  startServiceProcess,
-} from "./support/services.js";
-import type { CompiledService, ServiceProcess } from "./support/services.types.js";
+import { auctionServiceRoot, compileService, gatewayRoot } from "./support/services.js";
+import type { CompiledService } from "./support/services.types.js";
 import { SseTestClient } from "./support/sse-client.js";
 import { startTestIssuer } from "./support/test-issuer.js";
 import type { TestIssuer } from "./support/test-issuer.types.js";
@@ -42,7 +37,8 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
   let pool: Pool | undefined;
   let issuer: TestIssuer | undefined;
   let topic: TestTopic | undefined;
-  const processes: ServiceProcess[] = [];
+  const processes = new ProcessGroup();
+  let api: AuctionApi;
   let apiUrl: string;
   let edgeUrl: string;
 
@@ -64,33 +60,21 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
     topic = new TestTopic(kafkaBrokers);
     await topic.create(3);
 
-    const api = start(auctionService, "index.js", {
-      HOST: "127.0.0.1",
-      PORT: String(await freePort()),
-      DATABASE_URL: database.url,
-      AUTH_ISSUER: issuer.issuer,
-      AUTH_AUDIENCE: issuer.audience,
-      AUTH_JWKS_URL: issuer.jwksUrl,
+    apiUrl = await startAuctionService(processes, auctionService, {
+      databaseUrl: database.url,
+      issuer,
+      kafkaBrokers,
+      topic: topic.name,
     });
-    apiUrl = /http:\/\/\S+/.exec(String((await api.waitForLog("Server listening at")).msg))![0];
-    start(auctionService, "outbox-publisher.main.js", {
-      DATABASE_URL: database.url,
-      KAFKA_BROKERS: kafkaBrokers,
-      AUCTION_EVENTS_TOPIC: topic.name,
-      OUTBOX_POLL_INTERVAL_MS: "100",
-    });
-    start(auctionService, "finalizer.main.js", {
-      DATABASE_URL: database.url,
-      FINALIZER_POLL_INTERVAL_MS: "100",
-    });
-    const relay = start(gateway, "relay.main.js", {
+    api = new AuctionApi({ apiUrl, pool, issuer });
+    const relay = processes.start(gateway, "relay.main.js", {
       KAFKA_BROKERS: kafkaBrokers,
       KAFKA_GROUP_ID: topic.groupId,
       AUCTION_EVENTS_TOPIC: topic.name,
       VALKEY_NODES: valkeyNodes,
     });
     await relay.waitForLog("relay started");
-    const edge = start(gateway, "edge.main.js", {
+    const edge = processes.start(gateway, "edge.main.js", {
       HOST: "127.0.0.1",
       PORT: "0",
       VALKEY_NODES: valkeyNodes,
@@ -101,7 +85,7 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
 
   afterAll(async () => {
     // The relay must leave its group before the group can be deleted.
-    await Promise.all(processes.map((child) => child.stop()));
+    await processes.stopAll();
     await topic?.remove();
     await pool?.end();
     await database?.drop();
@@ -110,54 +94,10 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
     await gateway?.remove();
   });
 
-  function start(
-    service: CompiledService,
-    entryFile: string,
-    environment: Record<string, string>,
-  ): ServiceProcess {
-    const child = startServiceProcess(service, entryFile, environment);
-    processes.push(child);
-    return child;
-  }
-
-  async function insertUser(): Promise<string> {
-    const result = await pool!.query<{ id: string }>(
-      `INSERT INTO users (email, username, password_hash)
-       VALUES ($1, 'End to end', '$argon2id$test')
-       RETURNING id::text`,
-      [`e2e-${randomUUID()}@example.com`],
-    );
-    return result.rows[0]!.id;
-  }
-
-  async function post(path: string, userId: string, body: unknown): Promise<Response> {
-    return fetch(`${apiUrl}${path}`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${issuer!.accessToken(userId)}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-  }
-
-  async function createAuction(ownerId: string): Promise<string> {
-    const created = await post("/v1/auctions", ownerId, {
-      title: "Realtime lot",
-      description: "Watched over SSE.",
-      currencyCode: "USD",
-      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
-      startingPriceMinor: "1000",
-      minimumBidIncrementMinor: "100",
-    });
-    expect(created.status).toBe(201);
-    return ((await created.json()) as { id: string }).id;
-  }
-
   it("streams a bid accepted over HTTP to an SSE client", async () => {
-    const ownerId = await insertUser();
-    const bidderId = await insertUser();
-    const auctionId = await createAuction(ownerId);
+    const ownerId = await api.insertUser();
+    const bidderId = await api.insertUser();
+    const auctionId = await api.createAuction(ownerId, "Realtime lot", "Watched over SSE.");
 
     const client = await SseTestClient.open(`${edgeUrl}/v1/stream?auctions=${auctionId}`);
     try {
@@ -169,12 +109,7 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
         leadingBid: null,
       });
 
-      const placed = await post(`/v1/auctions/${auctionId}/bids`, bidderId, {
-        amountMinor: "1000",
-        idempotencyKey: randomUUID(),
-      });
-      expect(placed.status).toBe(201);
-      const { bid } = (await placed.json()) as { bid: { id: string } };
+      const bidId = await api.placeBid(auctionId, bidderId, "1000");
       await client.waitForTimeline(auctionId, ["snapshot@1", "bid-accepted@2"]);
 
       expect(client.timeline(auctionId)).toEqual(["snapshot@1", "bid-accepted@2"]);
@@ -183,7 +118,7 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
         data: {
           auctionId,
           auctionVersion: "2",
-          bidId: bid.id,
+          bidId,
           amountMinor: "1000",
           currencyCode: "USD",
           occurredAt: expect.any(String),
@@ -195,34 +130,20 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
   });
 
   it("closes an auction at its deadline and shows the winner to an SSE client", async () => {
-    const ownerId = await insertUser();
-    const bidderId = await insertUser();
-    const otherBidderId = await insertUser();
-    const auctionId = await createAuction(ownerId);
+    const ownerId = await api.insertUser();
+    const bidderId = await api.insertUser();
+    const otherBidderId = await api.insertUser();
+    const auctionId = await api.createAuction(ownerId, "Realtime lot", "Watched over SSE.");
     const client = await SseTestClient.open(`${edgeUrl}/v1/stream?auctions=${auctionId}`);
     try {
       await client.waitForTimeline(auctionId, ["snapshot@1"]);
-      await post(`/v1/auctions/${auctionId}/bids`, bidderId, {
-        amountMinor: "1000",
-        idempotencyKey: randomUUID(),
-      });
-      const winning = await post(`/v1/auctions/${auctionId}/bids`, otherBidderId, {
-        amountMinor: "1100",
-        idempotencyKey: randomUUID(),
-      });
-      const { bid } = (await winning.json()) as { bid: { id: string } };
+      await api.placeBid(auctionId, bidderId, "1000");
+      const winningBidId = await api.placeBid(auctionId, otherBidderId, "1100");
       await client.waitForTimeline(auctionId, ["snapshot@1", "bid-accepted@2", "bid-accepted@3"]);
 
-      // Time cannot be waited for (an auction lasts at least a minute), so
-      // the deadline is moved into the past. Everything after that is the
-      // finalizer process acting on its own.
-      await pool!.query(
-        `UPDATE auctions
-         SET starts_at = clock_timestamp() - interval '2 hours',
-             ends_at = clock_timestamp() - interval '1 second'
-         WHERE id = $1`,
-        [auctionId],
-      );
+      // Everything after the deadline passes is the finalizer process acting
+      // on its own.
+      await api.passDeadline(auctionId);
 
       // The edge does not know AuctionClosed.v1, so it sees a version it
       // cannot apply and resyncs from auction-service: a snapshot at the new
@@ -237,7 +158,7 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
         auctionId,
         auctionVersion: "4",
         phase: "closed",
-        leadingBid: { bidId: bid.id, amountMinor: "1100" },
+        leadingBid: { bidId: winningBidId, amountMinor: "1100" },
       });
 
       const response = await fetch(`${apiUrl}/v1/auctions/${auctionId}`);
@@ -245,7 +166,7 @@ describe("a bid, end to end", { timeout: 180_000 }, () => {
         id: auctionId,
         phase: "closed",
         version: "4",
-        winningBidId: bid.id,
+        winningBidId,
       });
     } finally {
       client.close();

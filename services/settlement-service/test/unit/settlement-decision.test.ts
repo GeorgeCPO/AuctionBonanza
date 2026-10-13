@@ -41,6 +41,7 @@ describe("decideSettlement", () => {
       expect(decideSettlement(inputFor(payload, { key: "42" }))).toEqual({
         kind: "ignore",
         eventType: "BidAccepted.v1",
+        expected: true,
       });
     });
 
@@ -52,8 +53,23 @@ describe("decideSettlement", () => {
           eventType: "AuctionCancelled.v1",
           eventId: undefined,
         }),
-      ).toEqual({ kind: "ignore", eventType: "AuctionCancelled.v1" });
+      ).toEqual({ kind: "ignore", eventType: "AuctionCancelled.v1", expected: false });
     });
+
+    // A close sent under a type settlement does not recognise is ignored too,
+    // but flagged as unexpected so the handler can warn about it.
+    it.each(["AuctionClosed.v2", "AuctionClosed.v1 ", "auctionclosed.v1"])(
+      "flags %j as an unexpected type, not a known-irrelevant one",
+      (eventType) => {
+        const event = soldEvent();
+
+        expect(decideSettlement(inputFor(event, { eventType }))).toEqual({
+          kind: "ignore",
+          eventType,
+          expected: false,
+        });
+      },
+    );
   });
 
   describe("rejects", () => {
@@ -112,7 +128,7 @@ describe("decideSettlement", () => {
       expect(decision).toMatchObject({ detail: expect.stringContaining("/auctionId") });
     });
 
-    it("says so when only the contract's own rules are broken", () => {
+    it("names the outcome rule when a winner has no price", () => {
       const event = soldEvent();
 
       const decision = decideSettlement(
@@ -120,8 +136,20 @@ describe("decideSettlement", () => {
       );
 
       expect(decision).toMatchObject({
-        detail: "payload satisfies the schema but not the AuctionClosed.v1 contract",
+        detail: "/winningBidId, /winnerId and /finalAmountMinor: must be all set or all null",
       });
+    });
+
+    it("names the timestamp when the date does not exist", () => {
+      const event = soldEvent();
+
+      const decision = decideSettlement(
+        inputFor(event, {
+          value: JSON.stringify({ ...event, occurredAt: "2030-02-30T10:00:00.000000Z" }),
+        }),
+      );
+
+      expect(decision).toMatchObject({ detail: "/occurredAt: is not a real UTC timestamp" });
     });
 
     it.each([
