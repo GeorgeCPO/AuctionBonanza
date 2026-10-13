@@ -212,6 +212,9 @@ update and the Kafka write atomic either, because they are two separate systems.
 - After at-least-once processing with a crash, expect to re-read messages that
   were already processed. Consumer idempotency covers that too.
 
+The settlement worker is a consumer that follows these rules against
+PostgreSQL: [`SETTLEMENT.md`](SETTLEMENT.md).
+
 ## Tests
 
 The publisher's integration tests run against real PostgreSQL and Kafka, in

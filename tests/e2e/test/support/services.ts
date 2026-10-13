@@ -11,6 +11,7 @@ import type { CompiledService, ServiceProcess } from "./services.types.js";
 const repositoryRoot = resolve(import.meta.dirname, "../../../..");
 export const auctionServiceRoot = resolve(repositoryRoot, "services/auction-service");
 export const gatewayRoot = resolve(repositoryRoot, "services/realtime-gateway");
+export const settlementServiceRoot = resolve(repositoryRoot, "services/settlement-service");
 
 // Compiles a service with its own compiler into a throwaway directory under
 // its node_modules, so dist/ is never overwritten and Node resolves the

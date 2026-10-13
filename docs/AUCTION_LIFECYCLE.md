@@ -1,6 +1,7 @@
 # Auction Lifecycle
 
-Status: accepted initial model; automatic/max bidding and settlement will extend it.
+Status: accepted initial model; automatic/max bidding and payment will extend it.
+Settlement creates an order for each sold auction ([`SETTLEMENT.md`](SETTLEMENT.md)).
 
 ## Persist facts, derive time phases
 

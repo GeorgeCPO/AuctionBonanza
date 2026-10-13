@@ -149,6 +149,11 @@ services:
 
   # One-shot topic provisioning. `--if-not-exists` makes it safe to rerun; it
   # does not change the partition count of an existing topic.
+  #
+  # auction.events.dlq holds the records the settlement worker could never
+  # process (docs/SETTLEMENT.md). It is low volume, so one partition, and it is
+  # kept for 30 days, longer than the 7 days of the topic it comes from, because
+  # it exists to be read and repaired by a person.
   kafka-init:
     image: apache/kafka:4.3.1
     depends_on:
@@ -160,7 +165,11 @@ services:
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists
         --topic auction.events --partitions 12 --replication-factor 1
         --config min.insync.replicas=1 --config cleanup.policy=delete --config retention.ms=604800000 &&
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --describe --topic auction.events
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists
+        --topic auction.events.dlq --partitions 1 --replication-factor 1
+        --config min.insync.replicas=1 --config cleanup.policy=delete --config retention.ms=2592000000 &&
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --describe --topic auction.events &&
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --describe --topic auction.events.dlq
     restart: "no"
 
   # Valkey runs in cluster mode from the start: the realtime gateway reads
