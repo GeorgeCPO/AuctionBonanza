@@ -1,9 +1,9 @@
 import {
   AUCTION_CLOSED_V1_EVENT_TYPE,
-  AuctionClosedV1Schema,
+  BID_ACCEPTED_V1_EVENT_TYPE,
+  findAuctionClosedV1Violation,
   isAuctionClosedV1,
 } from "@auction-bonanza/contracts";
-import { Value } from "@sinclair/typebox/value";
 
 import type {
   DecisionInput,
@@ -16,18 +16,23 @@ import type {
 // testable without Kafka or PostgreSQL.
 //
 // The two ways out of "settle" differ on purpose. A record of another event
-// type is ignored: settlement does not own it, and ignoring it loses nothing
-// settlement needs. A record that claims to be an AuctionClosed.v1 but cannot
-// be read as one is rejected, not skipped: it may be a winner, so it must reach
-// a person instead of vanishing. This is the opposite of the realtime relay,
-// whose display path can skip a bad record because the edges repair the gap
-// from auction-service.
+// type is ignored: settlement does not own it. Only BidAccepted.v1 is known to
+// be irrelevant, so any other type is flagged as unexpected, because a close
+// under a new name would otherwise vanish without a trace. A record that claims
+// to be an AuctionClosed.v1 but cannot be read as one is rejected, not skipped:
+// it may be a winner, so it must reach a person instead of vanishing. This is
+// the opposite of the realtime relay, whose display path can skip a bad record
+// because the edges repair the gap from auction-service.
 export function decideSettlement(record: DecisionInput): SettlementDecision {
   if (record.eventType === undefined) {
     return reject("missing-event-type", "missing event-type header");
   }
   if (record.eventType !== AUCTION_CLOSED_V1_EVENT_TYPE) {
-    return { kind: "ignore", eventType: record.eventType };
+    return {
+      kind: "ignore",
+      eventType: record.eventType,
+      expected: record.eventType === BID_ACCEPTED_V1_EVENT_TYPE,
+    };
   }
   if (record.value === null) {
     return reject("missing-value", "missing value");
@@ -40,7 +45,8 @@ export function decideSettlement(record: DecisionInput): SettlementDecision {
     return reject("invalid-json", error instanceof Error ? error.message : String(error));
   }
   if (!isAuctionClosedV1(payload)) {
-    return reject("contract-violation", describeContractViolation(payload));
+    const violation = findAuctionClosedV1Violation(payload);
+    return reject("contract-violation", violation ?? "does not satisfy the contract");
   }
 
   // The key decides the partition, and so which events of an auction are
@@ -66,15 +72,4 @@ export function decideSettlement(record: DecisionInput): SettlementDecision {
 
 function reject(reason: RejectionReason, detail: string): RejectDecision {
   return { kind: "reject", reason, detail };
-}
-
-// The schema's first complaint when there is one. A payload the schema accepts
-// but the contract does not (an invalid timestamp, or half an outcome) has no
-// schema error to quote.
-function describeContractViolation(payload: unknown): string {
-  const first = Value.Errors(AuctionClosedV1Schema, payload).First();
-  if (first === undefined) {
-    return "payload satisfies the schema but not the AuctionClosed.v1 contract";
-  }
-  return `${first.path === "" ? "/" : first.path}: ${first.message}`;
 }

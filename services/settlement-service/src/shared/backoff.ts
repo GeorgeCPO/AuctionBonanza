@@ -2,10 +2,7 @@
 // relay, deliberately copied rather than shared: it is small, and services
 // keep no common runtime code.
 
-export interface RetryBackoffPolicy {
-  baseDelayMs: number;
-  maxDelayMs: number;
-}
+import type { RetryBackoffPolicy } from "./backoff.types.js";
 
 // Capped exponential backoff with "equal jitter": the delay for attempt n is
 // uniformly drawn from [ceiling / 2, ceiling], where

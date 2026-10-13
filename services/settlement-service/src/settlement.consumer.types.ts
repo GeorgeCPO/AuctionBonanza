@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 
 import type { RecordHandler } from "./settlement.handler.types.js";
-import type { RetryBackoffPolicy } from "./shared/backoff.js";
+import type { RetryBackoffPolicy } from "./shared/backoff.types.js";
 
 export interface SettlementConsumerOptions {
   brokers: readonly string[];

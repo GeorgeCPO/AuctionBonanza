@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 
+import type { ProducedRecord, ReadRecord, TestRecord } from "./kafka-harness.types.js";
 import { countMessages, fetchSettledOffsets } from "./topic-offsets.js";
 
 const silentKafkaLogger: KafkaJS.Logger = {
@@ -13,26 +14,6 @@ const silentKafkaLogger: KafkaJS.Logger = {
   namespace: () => silentKafkaLogger,
   setLogLevel: () => {},
 };
-
-export interface TestRecord {
-  key: string | Buffer | null;
-  value: string | Buffer | null;
-  // Sent as given: leave a header out to test its absence.
-  headers?: Record<string, string>;
-}
-
-export interface ProducedRecord {
-  partition: number;
-  offset: bigint;
-}
-
-export interface ReadRecord {
-  partition: number;
-  offset: bigint;
-  key: Buffer | null;
-  value: Buffer | null;
-  headers: Record<string, string>;
-}
 
 // A record as the outbox publisher sends it: key auctionId, the type and id
 // headers, and the event as JSON.
@@ -61,7 +42,8 @@ export async function waitFor(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {
-    if (Date.now() > deadline) {
+    const now = Date.now();
+    if (now > deadline) {
       const reason = typeof description === "string" ? description : description();
       throw new Error(`Timed out waiting for ${reason}`);
     }
@@ -203,8 +185,9 @@ export class KafkaTestTopics {
     ]);
     const ends = new Map<number, bigint>();
     for (const { partition, high } of offsets) {
-      if (BigInt(high) > 0n) {
-        ends.set(partition, BigInt(high));
+      const end = BigInt(high);
+      if (end > 0n) {
+        ends.set(partition, end);
       }
     }
     return {

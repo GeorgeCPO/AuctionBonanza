@@ -16,8 +16,8 @@ describe("PostgresSettlementRepository", () => {
     repository = new PostgresSettlementRepository(database);
   });
 
-  // The first delivery of an event: recording it returns its id, and the
-  // order insert returns the new order.
+  // The first delivery of an event: recording it returns its id, the order
+  // insert returns the new order, and the auction is recorded as closed unsold.
   function firstDelivery(orderId = "501"): void {
     database.respond = (text) => {
       if (text.includes("INSERT INTO settlement_processed_events")) {
@@ -25,6 +25,9 @@ describe("PostgresSettlementRepository", () => {
       }
       if (text.includes("INSERT INTO orders")) {
         return [{ id: orderId }];
+      }
+      if (text.includes("FROM auctions")) {
+        return [{ unsold: true }];
       }
       return undefined;
     };
@@ -60,17 +63,45 @@ describe("PostgresSettlementRepository", () => {
     expect(database.releases).toEqual([undefined]);
   });
 
-  it("records an unsold auction without creating an order", async () => {
+  it("records an unsold auction without creating an order, after checking it is unsold", async () => {
     firstDelivery();
+    const event = unsoldEvent();
 
-    const outcome = await repository.settle(unsoldEvent());
+    const outcome = await repository.settle(event);
 
     expect(outcome).toEqual({ kind: "unsold_recorded" });
     expect(database.statements()).toEqual([
       "BEGIN",
       expect.stringContaining("INSERT INTO settlement_processed_events"),
+      expect.stringContaining("FROM auctions"),
       "COMMIT",
     ]);
+    expect(database.queries[2]?.values).toEqual([event.auctionId]);
+  });
+
+  describe("an event that says unsold", () => {
+    it.each([
+      ["an auction that has a winner", [{ unsold: false }]],
+      ["an auction that is not closed", [{ unsold: false }]],
+      ["an auction that does not exist", []],
+    ])("is refused, and not recorded, for %s", async (_description, auctionRows) => {
+      database.respond = (text) => {
+        if (text.includes("INSERT INTO settlement_processed_events")) {
+          return [{ event_id: "recorded" }];
+        }
+        return text.includes("FROM auctions") ? auctionRows : undefined;
+      };
+
+      const failure = await repository.settle(unsoldEvent()).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(PermanentSettlementError);
+      expect(failure).toMatchObject({
+        sqlState: undefined,
+        constraint: "settlement_unsold_matches_auction",
+      });
+      expect(database.statements().at(-1)).toBe("ROLLBACK");
+      expect(database.statements()).not.toContain("COMMIT");
+    });
   });
 
   it("recognises an event it handled before and writes nothing else", async () => {

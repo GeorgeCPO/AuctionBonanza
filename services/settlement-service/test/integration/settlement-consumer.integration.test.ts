@@ -9,15 +9,13 @@ import { SETTLEMENT_LOG_MESSAGES } from "../../src/settlement.log-messages.js";
 import { wrapPool } from "../../src/shared/database.js";
 import { AuctionFixtures } from "../support/auction-fixtures.js";
 import { requireEnvironment } from "../support/environment.js";
-import { createIsolatedDatabase, type IsolatedDatabase } from "../support/isolated-database.js";
-import {
-  KafkaTestTopics,
-  outboxRecord,
-  waitFor,
-  type TestRecord,
-} from "../support/kafka-harness.js";
+import { createIsolatedDatabase } from "../support/isolated-database.js";
+import type { IsolatedDatabase } from "../support/isolated-database.types.js";
+import { KafkaTestTopics, outboxRecord, waitFor } from "../support/kafka-harness.js";
+import type { TestRecord } from "../support/kafka-harness.types.js";
 import { captureLogger } from "../support/log-capture.js";
-import { startSettlement, type SettlementRun } from "../support/settlement-harness.js";
+import { startSettlement } from "../support/settlement-harness.js";
+import type { SettlementRun } from "../support/settlement-harness.types.js";
 
 const brokers = requireEnvironment("TEST_KAFKA_BROKERS");
 const adminDatabaseUrl = requireEnvironment("TEST_DATABASE_URL");
@@ -373,6 +371,28 @@ describe("settlement consumer", { timeout: 120_000 }, () => {
       });
       // The refused event left no trace: its record of being handled was
       // rolled back with its order.
+      expect(await fixtures.processedEventIds()).toEqual([good.event.eventId]);
+    });
+
+    it("is dead-lettered when it says unsold about an auction that was sold", async () => {
+      const setup = await setUp(1);
+      const sold = await fixtures.soldAuction(ownerId, bidderId, "1500");
+      const good = await fixtures.soldAuction(ownerId, bidderId, "1600");
+      const forged = { ...sold.event, winningBidId: null, winnerId: null, finalAmountMinor: null };
+      await topics.produce(setup.topic, [outboxRecord(forged), outboxRecord(good.event)]);
+
+      const run = await start(setup);
+      await waitForOrders(1);
+      await run.stop();
+
+      const [deadLetter] = await topics.readAll(setup.deadLetterTopic);
+      expect(deadLetter?.headers).toMatchObject({
+        [DEAD_LETTER_HEADERS.reason]: "database-rejected",
+        [DEAD_LETTER_HEADERS.detail]: expect.stringContaining(
+          "[constraint settlement_unsold_matches_auction]",
+        ),
+      });
+      // The forged event was neither settled nor recorded as handled.
       expect(await fixtures.processedEventIds()).toEqual([good.event.eventId]);
     });
 

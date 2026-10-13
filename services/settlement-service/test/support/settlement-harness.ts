@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { AuctionClosedV1 } from "@auction-bonanza/contracts";
-import { pino, type Logger } from "pino";
+import { pino } from "pino";
 
 import { KafkaDeadLetterPublisher } from "../../src/dead-letter.publisher.js";
 import type { DeadLetterPublisher, DeadLetterRecord } from "../../src/dead-letter.types.js";
@@ -12,7 +12,7 @@ import type {
   SettlementOutcome,
   SettlementRepository,
 } from "../../src/settlement.repository.types.js";
-import type { Database } from "../../src/shared/database.js";
+import type { SettlementRun, StartSettlementOptions } from "./settlement-harness.types.js";
 
 // Wraps the real repository. `failWhile` returns the error a settle should fail
 // with (before touching the database), or undefined to let it through. Every
@@ -50,21 +50,6 @@ export class FlakyDeadLetters implements DeadLetterPublisher {
   }
 }
 
-export interface StartSettlementOptions {
-  brokers: string;
-  topic: string;
-  deadLetterTopic: string;
-  groupId: string;
-  database: Database;
-  logger?: Logger;
-}
-
-export interface SettlementRun {
-  repository: FlakyRepository;
-  deadLetters: FlakyDeadLetters;
-  stop(): Promise<void>;
-}
-
 // Starts the real consumer, handler, repository and dead-letter producer
 // against real Kafka and PostgreSQL, with short intervals so retries and
 // commits happen quickly in a test. The repository and the dead-letter
@@ -98,7 +83,14 @@ export async function startSettlement(options: StartSettlementOptions): Promise<
     retryBackoff: { baseDelayMs: 50, maxDelayMs: 200 },
     logger,
   });
-  await consumer.start();
+  try {
+    await consumer.start();
+  } catch (error) {
+    // Nothing returned to the caller can stop what was already started.
+    await consumer.stop().catch(() => {});
+    await realDeadLetters.disconnect(5_000);
+    throw error;
+  }
 
   let stopped = false;
   return {

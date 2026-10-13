@@ -1,13 +1,16 @@
+import { randomUUID } from "node:crypto";
+
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { SETTLEMENT_LOG_MESSAGES } from "../../src/settlement.log-messages.js";
 import { AuctionFixtures } from "../support/auction-fixtures.js";
 import { requireEnvironment } from "../support/environment.js";
-import { createIsolatedDatabase, type IsolatedDatabase } from "../support/isolated-database.js";
+import { createIsolatedDatabase } from "../support/isolated-database.js";
+import type { IsolatedDatabase } from "../support/isolated-database.types.js";
 import { KafkaTestTopics, outboxRecord, waitFor } from "../support/kafka-harness.js";
 import { compileService, startServiceProcess } from "../support/service-process.js";
-import type { CompiledService } from "../support/service-process.types.js";
+import type { CompiledService, ServiceProcess } from "../support/service-process.types.js";
 
 const brokers = requireEnvironment("TEST_KAFKA_BROKERS");
 const adminDatabaseUrl = requireEnvironment("TEST_DATABASE_URL");
@@ -19,6 +22,9 @@ describe("settlement process", { timeout: 180_000 }, () => {
   let pool: Pool;
   let fixtures: AuctionFixtures;
   let topics: KafkaTestTopics;
+  // Every worker a test starts, so afterAll can stop what a failing test left
+  // running before it drops the database and topics under it.
+  const workers: ServiceProcess[] = [];
 
   beforeAll(async () => {
     topics = new KafkaTestTopics(brokers);
@@ -33,6 +39,7 @@ describe("settlement process", { timeout: 180_000 }, () => {
   });
 
   afterAll(async () => {
+    await Promise.all(workers.map(async (worker) => worker.stop()));
     await Promise.all([
       topics?.disconnect(),
       service?.remove(),
@@ -42,6 +49,12 @@ describe("settlement process", { timeout: 180_000 }, () => {
       })(),
     ]);
   });
+
+  function launch(environment: Record<string, string>): ServiceProcess {
+    const worker = startServiceProcess(service, "settlement.main.js", environment);
+    workers.push(worker);
+    return worker;
+  }
 
   function environment(
     topic: string,
@@ -61,12 +74,26 @@ describe("settlement process", { timeout: 180_000 }, () => {
   }
 
   it("refuses to start with invalid configuration", async () => {
-    const worker = startServiceProcess(service, "settlement.main.js", { KAFKA_BROKERS: brokers });
+    const worker = launch({ KAFKA_BROKERS: brokers });
 
     const [exitCode] = await worker.exited;
 
     expect(exitCode).toBe(1);
     expect(worker.stderr()).toContain("Invalid settlement configuration: /databaseUrl");
+  });
+
+  it("refuses to start when the dead-letter topic does not exist, and names it", async () => {
+    const topic = await topics.create(1);
+    const missing = `settlement-test-missing-${randomUUID()}`;
+    const worker = launch(environment(topic, missing, topics.newGroup()));
+
+    const [exitCode] = await worker.exited;
+
+    expect(exitCode).toBe(1);
+    const failure = worker
+      .logs()
+      .find((line) => line.msg === SETTLEMENT_LOG_MESSAGES.failedToStart);
+    expect((failure?.err as { message: string } | undefined)?.message).toContain(missing);
   });
 
   it("creates no second order after a crash between the database commit and the offset commit, then drains cleanly on SIGTERM", async () => {
@@ -81,7 +108,7 @@ describe("settlement process", { timeout: 180_000 }, () => {
 
     // The first offset commit is a minute away, so the worker is killed after
     // its database commits and before Kafka hears about any of them.
-    const crashing = startServiceProcess(service, "settlement.main.js", {
+    const crashing = launch({
       ...environment(topic, deadLetterTopic, groupId),
       SETTLEMENT_COMMIT_INTERVAL_MS: "60000",
     });
@@ -96,11 +123,7 @@ describe("settlement process", { timeout: 180_000 }, () => {
 
     // The next worker resumes from the last committed offset, which is the
     // beginning: both events are delivered again, and both are recognised.
-    const restarted = startServiceProcess(
-      service,
-      "settlement.main.js",
-      environment(topic, deadLetterTopic, groupId),
-    );
+    const restarted = launch(environment(topic, deadLetterTopic, groupId));
     const repeats = () =>
       restarted.logs().filter((line) => line.msg === SETTLEMENT_LOG_MESSAGES.duplicate);
     await waitFor(

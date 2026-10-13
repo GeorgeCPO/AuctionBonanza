@@ -6,7 +6,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AuctionFixtures } from "../support/auction-fixtures.js";
 import { requireEnvironment } from "../support/environment.js";
-import { createIsolatedDatabase, type IsolatedDatabase } from "../support/isolated-database.js";
+import { createIsolatedDatabase } from "../support/isolated-database.js";
+import type { IsolatedDatabase } from "../support/isolated-database.types.js";
 
 const adminDatabaseUrl = requireEnvironment("TEST_DATABASE_URL");
 
@@ -56,11 +57,13 @@ describe("settlement schema", () => {
     return { event: await fixtures.close(auctionId), losingBidId, winningBidId };
   }
 
-  async function recordEvent(eventId: string = randomUUID()): Promise<string> {
+  // Records an event as handled for an auction. An order's source event must be
+  // the one recorded for the order's own auction.
+  async function recordEvent(auctionId: string, eventId: string = randomUUID()): Promise<string> {
     await pool.query(
       `INSERT INTO settlement_processed_events (event_id, event_type, auction_id, auction_version)
-       VALUES ($1, 'AuctionClosed.v1', 1, 2)`,
-      [eventId],
+       VALUES ($1, 'AuctionClosed.v1', $2, 2)`,
+      [eventId, auctionId],
     );
     return eventId;
   }
@@ -106,7 +109,7 @@ describe("settlement schema", () => {
       buyerId: event.winnerId!,
       amountMinor: event.finalAmountMinor!,
       currencyCode: event.currencyCode,
-      sourceEventId: await recordEvent(),
+      sourceEventId: await recordEvent(event.auctionId),
       ...overrides,
     };
   }
@@ -149,7 +152,7 @@ describe("settlement schema", () => {
           buyerId: winnerId,
           amountMinor: "1500",
           currencyCode: "EUR",
-          sourceEventId: await recordEvent(),
+          sourceEventId: await recordEvent(auctionId),
         }),
       );
 
@@ -253,10 +256,22 @@ describe("settlement schema", () => {
       expect(refusal).toEqual({ code: "23503", constraint: "orders_source_event_id_fkey" });
     });
 
+    it("is refused when its source event was recorded for another auction", async () => {
+      const first = await fixtures.soldAuction(ownerId, winnerId);
+      const second = await fixtures.soldAuction(ownerId, winnerId);
+      const otherAuctionsEvent = await recordEvent(second.event.auctionId);
+
+      const refusal = await refusalOf(
+        insertOrder(await correctOrder(first.event, { sourceEventId: otherAuctionsEvent })),
+      );
+
+      expect(refusal).toEqual({ code: "23503", constraint: "orders_source_event_id_fkey" });
+    });
+
     it("cannot be made by two orders sharing one event", async () => {
       const first = await fixtures.soldAuction(ownerId, winnerId);
       const second = await fixtures.soldAuction(ownerId, winnerId);
-      const sourceEventId = await recordEvent();
+      const sourceEventId = await recordEvent(first.event.auctionId);
       await insertOrder(await correctOrder(first.event, { sourceEventId }));
 
       const refusal = await refusalOf(
@@ -322,9 +337,11 @@ describe("settlement schema", () => {
 
   describe("the record of processed events", () => {
     it("holds an event once", async () => {
-      const eventId = await recordEvent();
+      const eventId = await recordEvent("1");
 
-      const refusal = await refusalOf(recordEvent(eventId));
+      // Under another auction the composite key does not conflict, so it is the
+      // primary key alone that refuses the repeat.
+      const refusal = await refusalOf(recordEvent("2", eventId));
 
       expect(refusal).toEqual({ code: "23505", constraint: "settlement_processed_events_pkey" });
     });

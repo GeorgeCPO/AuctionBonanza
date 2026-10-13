@@ -19,6 +19,10 @@ CREATE TABLE settlement_processed_events (
     auction_version bigint NOT NULL,
     processed_at timestamp with time zone NOT NULL DEFAULT now(),
     CONSTRAINT settlement_processed_events_pkey PRIMARY KEY (event_id),
+    -- Redundant with the primary key for uniqueness, but required as the target
+    -- of the composite orders_source_event_id_fkey: it lets the database refuse
+    -- an order that points at the event recorded for another auction.
+    CONSTRAINT settlement_processed_events_event_id_auction_id_key UNIQUE (event_id, auction_id),
     CONSTRAINT settlement_processed_events_auction_version_check CHECK (auction_version >= 1)
 );
 

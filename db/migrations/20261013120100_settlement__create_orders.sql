@@ -31,9 +31,10 @@ CREATE TABLE orders (
     CONSTRAINT orders_winning_bid_id_fkey
       FOREIGN KEY (auction_id, winning_bid_id) REFERENCES bids(auction_id, id),
     -- An order exists only because an event was processed, in the same
-    -- transaction.
+    -- transaction, and that event was for this order's own auction.
     CONSTRAINT orders_source_event_id_fkey
-      FOREIGN KEY (source_event_id) REFERENCES settlement_processed_events(event_id)
+      FOREIGN KEY (source_event_id, auction_id)
+      REFERENCES settlement_processed_events(event_id, auction_id)
 );
 
 -- "No incorrect winner" as a database rule. The auction must be closed, and the

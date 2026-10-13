@@ -17,6 +17,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/integration/**/*.test.ts"],
+    // A suite's own timeout covers its tests but not its hooks, whose default is
+    // 10 s. The process test compiles the service in beforeAll, which a loaded CI
+    // runner can take longer than that to do. The limit only turns a hang into a
+    // failure; the hook ends as soon as it is ready.
+    hookTimeout: 120_000,
     // Informational: nothing fails on a low number (see docs/TESTING.md). Only
     // code that runs inside the Vitest process is measured, not the service
     // the *-process tests start.

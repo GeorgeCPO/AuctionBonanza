@@ -37,7 +37,8 @@ export async function fetchSettledOffsets<Offsets extends PartitionOffsets>(
     if (isSettled(offsets)) {
       return offsets;
     }
-    if (Date.now() > deadline) {
+    const now = Date.now();
+    if (now > deadline) {
       throw new Error(
         `Offsets of ${options.topic} were still unavailable after ${options.timeoutMs}ms: ${JSON.stringify(offsets)}`,
       );

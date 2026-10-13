@@ -1,6 +1,8 @@
-import { KafkaJS } from "@confluentinc/kafka-javascript";
-import type { Logger } from "pino";
+import { setTimeout as delay } from "node:timers/promises";
 
+import { KafkaJS } from "@confluentinc/kafka-javascript";
+
+import type { KafkaDeadLetterPublisherOptions } from "./dead-letter.publisher.types.js";
 import type {
   DeadLetterHeaders,
   DeadLetterPublisher,
@@ -9,13 +11,10 @@ import type {
 import { createKafkaLogger } from "./shared/kafka-logger.js";
 import { withTimeout } from "./shared/timeout.js";
 
-export interface KafkaDeadLetterPublisherOptions {
-  brokers: readonly string[];
-  clientId: string;
-  topic: string;
-  sendTimeoutMs: number;
-  logger: Logger;
-}
+// A topic created a moment ago may not be in the broker's metadata yet, so the
+// startup check looks a few times before it calls the topic missing.
+const TOPIC_CHECK_ATTEMPTS = 10;
+const TOPIC_CHECK_DELAY_MS = 200;
 
 // Produces unprocessable records to the dead-letter topic. The producer is
 // configured like the outbox publisher's: a send resolves only once every
@@ -52,9 +51,15 @@ export class KafkaDeadLetterPublisher implements DeadLetterPublisher {
     });
   }
 
+  // Connects, then requires the dead-letter topic to exist. Topics are
+  // provisioned explicitly (automatic creation is off), so without the check a
+  // missing or misspelled topic shows up only at the first record that cannot
+  // be processed, as a send that times out and stalls its partition behind an
+  // error that names no cause. Failing here fails the deploy instead.
   async connect(): Promise<void> {
     await this.producer.connect();
     this.connected = true;
+    await this.requireTopic();
   }
 
   async publish(record: DeadLetterRecord): Promise<void> {
@@ -83,6 +88,31 @@ export class KafkaDeadLetterPublisher implements DeadLetterPublisher {
       await this.producer.flush({ timeout: timeoutMs });
     } finally {
       await this.producer.disconnect();
+    }
+  }
+
+  private async requireTopic(): Promise<void> {
+    const admin = new KafkaJS.Kafka({}).admin({
+      kafkaJS: { logger: createKafkaLogger(this.options.logger) },
+      "bootstrap.servers": this.options.brokers.join(","),
+      "client.id": this.options.clientId,
+    });
+    await admin.connect();
+    try {
+      for (let attempt = 1; attempt <= TOPIC_CHECK_ATTEMPTS; attempt += 1) {
+        const topics = await admin.listTopics();
+        if (topics.includes(this.options.topic)) {
+          return;
+        }
+        if (attempt < TOPIC_CHECK_ATTEMPTS) {
+          await delay(TOPIC_CHECK_DELAY_MS);
+        }
+      }
+      throw new Error(
+        `dead-letter topic ${this.options.topic} does not exist; provision it (docker compose up kafka-init) or fix SETTLEMENT_DEAD_LETTER_TOPIC`,
+      );
+    } finally {
+      await admin.disconnect();
     }
   }
 }

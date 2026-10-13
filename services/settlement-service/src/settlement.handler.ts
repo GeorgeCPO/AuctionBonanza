@@ -1,4 +1,8 @@
-import type { AuctionClosedV1 } from "@auction-bonanza/contracts";
+import {
+  EVENT_ID_HEADER,
+  EVENT_TYPE_HEADER,
+  type AuctionClosedV1,
+} from "@auction-bonanza/contracts";
 
 import type { ConsumedRecord, RecordHeaders } from "./consumed-record.types.js";
 import { buildDeadLetterRecord } from "./dead-letter.record.js";
@@ -37,15 +41,21 @@ export class SettlementHandler implements RecordHandler {
     const decision = decideSettlement({
       key: record.key?.toString("utf8") ?? null,
       value: record.value?.toString("utf8") ?? null,
-      eventType: headerValue(record.headers, "event-type"),
-      eventId: headerValue(record.headers, "event-id"),
+      eventType: headerValue(record.headers, EVENT_TYPE_HEADER),
+      eventId: headerValue(record.headers, EVENT_ID_HEADER),
     });
 
     if (decision.kind === "ignore") {
-      this.options.logger.debug(
-        { partition: record.partition, offset: record.offset, eventType: decision.eventType },
-        "ignoring auction event that settlement does not handle",
-      );
+      const fields = {
+        partition: record.partition,
+        offset: record.offset,
+        eventType: decision.eventType,
+      };
+      if (decision.expected) {
+        this.options.logger.debug(fields, SETTLEMENT_LOG_MESSAGES.ignored);
+      } else {
+        this.options.logger.warn(fields, SETTLEMENT_LOG_MESSAGES.unknownEventType);
+      }
       return { kind: "ignored", eventType: decision.eventType };
     }
     if (decision.kind === "reject") {
@@ -112,7 +122,9 @@ export class SettlementHandler implements RecordHandler {
         this.options.logger.info(fields, SETTLEMENT_LOG_MESSAGES.unsoldRecorded);
         break;
       case "duplicate":
-        this.options.logger.info(fields, SETTLEMENT_LOG_MESSAGES.duplicate);
+        // Replaying retained history (a new or expired group) repeats every
+        // close already settled, so one line each would bury the real ones.
+        this.options.logger.debug(fields, SETTLEMENT_LOG_MESSAGES.duplicate);
         break;
     }
   }
@@ -122,8 +134,15 @@ export class SettlementHandler implements RecordHandler {
 // dead-letter topic can tell a duplicate order from a mismatched winner
 // without opening the logs.
 function describePermanentFailure(error: PermanentSettlementError): string {
-  const constraint = error.constraint === undefined ? "" : `, constraint ${error.constraint}`;
-  return `${describeError(error)} [SQLSTATE ${error.sqlState}${constraint}]`;
+  const rule: string[] = [];
+  if (error.sqlState !== undefined) {
+    rule.push(`SQLSTATE ${error.sqlState}`);
+  }
+  if (error.constraint !== undefined) {
+    rule.push(`constraint ${error.constraint}`);
+  }
+  const suffix = rule.length === 0 ? "" : ` [${rule.join(", ")}]`;
+  return `${describeError(error)}${suffix}`;
 }
 
 function headerValue(headers: RecordHeaders, name: string): string | undefined {

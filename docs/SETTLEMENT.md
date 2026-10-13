@@ -13,13 +13,14 @@ per sold auction, for exactly the bidder who won, however the messages arrive.
 The settlement worker is a Kafka consumer in group `settlement-worker`, in its
 own service (`services/settlement-service`). For each record on `auction.events`:
 
-| Record                                                                  | Result                                                                                 |
-| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `AuctionClosed.v1`, sold                                                | One order for the winner, and a record that the event was handled, in one transaction. |
-| `AuctionClosed.v1`, unsold                                              | The record that the event was handled. There is nothing to settle, so no order.        |
-| Any other event type (`BidAccepted.v1`)                                 | Ignored. Settlement does not own it.                                                   |
-| A record that claims to be `AuctionClosed.v1` but cannot be read as one | Copied to the dead-letter topic ([below](#the-dead-letter-topic)).                     |
-| An `AuctionClosed.v1` the database refuses                              | Copied to the dead-letter topic, with the rule that refused it.                        |
+| Record                                                                  | Result                                                                                                                                        |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AuctionClosed.v1`, sold                                                | One order for the winner, and a record that the event was handled, in one transaction.                                                        |
+| `AuctionClosed.v1`, unsold                                              | The record that the event was handled, after checking the auction really is unsold. No order.                                                 |
+| `BidAccepted.v1`                                                        | Ignored. Settlement does not own it.                                                                                                          |
+| Any other event type                                                    | Ignored, with a warning: a close under a new name (`AuctionClosed.v2`, a mistyped header) would otherwise create no order and leave no trace. |
+| A record that claims to be `AuctionClosed.v1` but cannot be read as one | Copied to the dead-letter topic ([below](#the-dead-letter-topic)).                                                                            |
+| An `AuctionClosed.v1` the database refuses                              | Copied to the dead-letter topic, with the rule that refused it.                                                                               |
 
 It has no HTTP API. It reads and writes `auction_db`. It **owns** the
 `orders` and `settlement_processed_events` tables, and reads `auctions` and
@@ -65,12 +66,18 @@ stored offsets, so an offset is never committed before the effect it stands for.
 
 `PostgresSettlementRepository.settle` runs one transaction per event:
 
-1. `INSERT INTO settlement_processed_events ... ON CONFLICT (event_id) DO NOTHING`.
-   No row back means an earlier delivery handled this event: commit, report
+1. `INSERT INTO settlement_processed_events ... ON CONFLICT DO NOTHING`, with no
+   conflict target on purpose: the event is unique under two keys, and a target
+   would let a race hit the other key and raise instead of being skipped. No row
+   back means an earlier delivery handled this event: commit, report
    `duplicate`. This is the consumer rule from
    [`OUTBOX_PUBLISHING.md`](OUTBOX_PUBLISHING.md#consumer-obligations): de-duplicate
    on `eventId`.
-2. For a sold auction, `INSERT INTO orders`.
+2. For a sold auction, `INSERT INTO orders`. For an unsold one there is no order
+   for a trigger to check, so the auction's recorded outcome is read in the same
+   transaction: an event that says "unsold" about an auction with a winner (or one
+   that is not closed, or does not exist) is refused, as a permanent failure, and
+   not recorded as handled.
 3. `COMMIT`.
 
 The record and the order commit together or not at all, so there is never an
@@ -104,7 +111,7 @@ person with `psql`.
 | The order names the auction's recorded winning bid                                                        | the same trigger (`orders_winning_bid_is_auction_winner`)     |
 | The buyer, price and currency are exactly the winning bid's bidder and amount, and the auction's currency | the same trigger (`orders_terms_match_winning_bid`)           |
 | The winning bid belongs to the same auction                                                               | composite foreign key `orders_winning_bid_id_fkey`            |
-| An order exists only because an event was processed                                                       | foreign key `orders_source_event_id_fkey`                     |
+| An order exists only because an event was processed, and that event was for the order's own auction       | composite foreign key `orders_source_event_id_fkey`           |
 | An order's facts never change                                                                             | `order_reject_fact_change` trigger (`orders_facts_immutable`) |
 
 This is "no incorrect winner" as a database rule. The trigger compares the order
@@ -126,6 +133,7 @@ toward retrying:
 | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------------------------------------- |
 | The record cannot be read as an `AuctionClosed.v1` (bad JSON, contract violation, key or `event-id` mismatch, no `event-type` header, no value) | permanent | Dead-letter, then acknowledge.           |
 | The database refuses the data: SQLSTATE class `22` (data exception) or `23` (integrity)                                                         | permanent | Dead-letter, then acknowledge.           |
+| An "unsold" event about an auction the database records as sold, open, or missing                                                               | permanent | Dead-letter, then acknowledge.           |
 | The database is down, a timeout, a deadlock, a serialization failure, a lost connection                                                         | transient | Pause the partition, retry with backoff. |
 | The dead-letter topic is unavailable                                                                                                            | transient | Pause the partition, retry with backoff. |
 | Any error settlement does not recognise                                                                                                         | transient | Pause the partition, retry with backoff. |
@@ -150,15 +158,15 @@ worker never creates it.
 
 A dead-lettered record is the original record, unchanged, with headers added:
 
-| Header                 | Value                                                                                                                                    |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `dlq-reason`           | `missing-event-type`, `missing-value`, `invalid-json`, `contract-violation`, `key-mismatch`, `event-id-mismatch`, or `database-rejected` |
-| `dlq-detail`           | What was wrong (the schema's first complaint, or the database's message with its SQLSTATE and constraint), at most 1000 characters       |
-| `dlq-source-topic`     | The topic it was read from                                                                                                               |
-| `dlq-source-partition` | Its partition                                                                                                                            |
-| `dlq-source-offset`    | Its offset, as a decimal string                                                                                                          |
-| `dlq-consumer-group`   | The group that rejected it                                                                                                               |
-| `dlq-failed-at`        | When, as an ISO 8601 UTC timestamp                                                                                                       |
+| Header                 | Value                                                                                                                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dlq-reason`           | `missing-event-type`, `missing-value`, `invalid-json`, `contract-violation`, `key-mismatch`, `event-id-mismatch`, or `database-rejected`                                  |
+| `dlq-detail`           | What was wrong (the first rule of the `AuctionClosed.v1` contract the record breaks, or the database's message with its SQLSTATE and constraint), at most 1000 characters |
+| `dlq-source-topic`     | The topic it was read from                                                                                                                                                |
+| `dlq-source-partition` | Its partition                                                                                                                                                             |
+| `dlq-source-offset`    | Its offset, as a decimal string                                                                                                                                           |
+| `dlq-consumer-group`   | The group that rejected it                                                                                                                                                |
+| `dlq-failed-at`        | When, as an ISO 8601 UTC timestamp                                                                                                                                        |
 
 The key, value and the record's own headers are copied byte for byte, so a
 person repairing it sees what the producer actually sent. A dead-letter send
@@ -259,20 +267,20 @@ Copy `services/settlement-service/.env.settlement.example` to `.env.settlement`.
 Every variable has a default except `DATABASE_URL`; an invalid value stops the
 process at startup, naming it.
 
-| Variable                            | Default              | Purpose                                                                                                                                                                       |
-| ----------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                      | none                 | The `auction_db` connection.                                                                                                                                                  |
-| `KAFKA_BROKERS`                     | `localhost:9092`     | Comma-separated `host:port` list.                                                                                                                                             |
-| `KAFKA_CLIENT_ID`, `KAFKA_GROUP_ID` | `settlement-worker`  | Client id and consumer group. Workers sharing a group share the partitions.                                                                                                   |
-| `AUCTION_EVENTS_TOPIC`              | `auction.events`     | The topic consumed.                                                                                                                                                           |
-| `SETTLEMENT_DEAD_LETTER_TOPIC`      | `auction.events.dlq` | Where unprocessable records go. Must differ from the topic consumed, or a rejected record would feed back to the worker that rejected it.                                     |
-| `SETTLEMENT_PARTITION_CONCURRENCY`  | 4                    | Partitions handled at once; also the database pool size.                                                                                                                      |
-| `SETTLEMENT_DEAD_LETTER_TIMEOUT_MS` | 5000                 | Bounds one dead-letter send, so a failed send is retried instead of hanging a partition. At least 1000: librdkafka rejects the connection timeout derived from it below that. |
-| `SETTLEMENT_SESSION_TIMEOUT_MS`     | 10000                | How long a crashed worker keeps its partitions before the group reassigns them. The broker's floor is 6000.                                                                   |
-| `SETTLEMENT_COMMIT_INTERVAL_MS`     | 1000                 | How often stored offsets are committed. Longer widens the window in which a crash redelivers handled records, which is harmless.                                              |
-| `SETTLEMENT_RETRY_BASE_DELAY_MS`    | 200                  | First retry delay after a transient failure.                                                                                                                                  |
-| `SETTLEMENT_RETRY_MAX_DELAY_MS`     | 10000                | Cap of the exponential backoff.                                                                                                                                               |
-| `SETTLEMENT_SHUTDOWN_TIMEOUT_MS`    | 15000                | Hard deadline for graceful shutdown; at least the dead-letter timeout plus one second. Unfinished work rolls back and is redelivered.                                         |
+| Variable                            | Default              | Purpose                                                                                                                                                                                                         |
+| ----------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                      | none                 | The `auction_db` connection.                                                                                                                                                                                    |
+| `KAFKA_BROKERS`                     | `localhost:9092`     | Comma-separated `host:port` list.                                                                                                                                                                               |
+| `KAFKA_CLIENT_ID`, `KAFKA_GROUP_ID` | `settlement-worker`  | Client id and consumer group. Workers sharing a group share the partitions.                                                                                                                                     |
+| `AUCTION_EVENTS_TOPIC`              | `auction.events`     | The topic consumed.                                                                                                                                                                                             |
+| `SETTLEMENT_DEAD_LETTER_TOPIC`      | `auction.events.dlq` | Where unprocessable records go. Must differ from the topic consumed, or a rejected record would feed back to the worker that rejected it. Must already exist: the worker refuses to start otherwise, naming it. |
+| `SETTLEMENT_PARTITION_CONCURRENCY`  | 4                    | Partitions handled at once; also the database pool size.                                                                                                                                                        |
+| `SETTLEMENT_DEAD_LETTER_TIMEOUT_MS` | 5000                 | Bounds one dead-letter send, so a failed send is retried instead of hanging a partition. At least 1000: librdkafka rejects the connection timeout derived from it below that.                                   |
+| `SETTLEMENT_SESSION_TIMEOUT_MS`     | 10000                | How long a crashed worker keeps its partitions before the group reassigns them. The broker's floor is 6000.                                                                                                     |
+| `SETTLEMENT_COMMIT_INTERVAL_MS`     | 1000                 | How often stored offsets are committed. Longer widens the window in which a crash redelivers handled records, which is harmless.                                                                                |
+| `SETTLEMENT_RETRY_BASE_DELAY_MS`    | 200                  | First retry delay after a transient failure.                                                                                                                                                                    |
+| `SETTLEMENT_RETRY_MAX_DELAY_MS`     | 10000                | Cap of the exponential backoff.                                                                                                                                                                                 |
+| `SETTLEMENT_SHUTDOWN_TIMEOUT_MS`    | 15000                | Hard deadline for graceful shutdown; at least the dead-letter timeout plus one second. Unfinished work rolls back and is redelivered.                                                                           |
 
 Database sessions are limited to a 10 s statement timeout, a 5 s lock timeout
 and a 30 s idle-in-transaction timeout, so a stalled worker releases its locks.

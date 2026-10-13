@@ -3,15 +3,7 @@ import { randomUUID } from "node:crypto";
 import { parseAuctionClosedV1, type AuctionClosedV1 } from "@auction-bonanza/contracts";
 import type { Pool, PoolClient } from "pg";
 
-export interface OrderRow {
-  id: string;
-  auctionId: string;
-  winningBidId: string;
-  buyerId: string;
-  amountMinor: string;
-  currencyCode: string;
-  sourceEventId: string;
-}
+import type { OrderRow } from "./auction-fixtures.types.js";
 
 // Builds the rows settlement reads, with plain SQL. The settlement tests may
 // not use auction-service's code, so this does by hand what the bid and

@@ -4,12 +4,9 @@ import { resolve } from "node:path";
 
 import { Client } from "pg";
 
-const schemaPath = resolve(import.meta.dirname, "../../../../db/schema.sql");
+import type { IsolatedDatabase } from "./isolated-database.types.js";
 
-export interface IsolatedDatabase {
-  url: string;
-  drop(): Promise<void>;
-}
+const schemaPath = resolve(import.meta.dirname, "../../../../db/schema.sql");
 
 // Creates a throwaway database from the committed schema snapshot, so a test
 // file owns every row it reads back and cannot be disturbed by another file

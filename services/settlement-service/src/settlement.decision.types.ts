@@ -19,10 +19,13 @@ export type RejectionReason =
   | "key-mismatch"
   | "event-id-mismatch";
 
-// An event type settlement does not own, such as every BidAccepted.v1.
+// An event type settlement does not own. `expected` is true for the type known
+// to be safe to ignore (every BidAccepted.v1); any other type is ignored too,
+// but is worth a warning, because a close under a new name would be lost.
 export interface IgnoreDecision {
   kind: "ignore";
   eventType: string;
+  expected: boolean;
 }
 
 export interface SettleDecision {
