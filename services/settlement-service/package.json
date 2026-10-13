@@ -1,0 +1,36 @@
+{
+  "name": "@auction-bonanza/settlement-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:deps": "pnpm --filter @auction-bonanza/contracts build",
+    "build": "pnpm run build:deps && tsc -p tsconfig.build.json",
+    "start": "node dist/settlement.main.js",
+    "start:local": "node --env-file-if-exists=.env.settlement dist/settlement.main.js",
+    "test:unit": "pnpm run build:deps && vitest run -c vitest.unit.config.ts",
+    "test:unit:coverage": "pnpm run build:deps && vitest run -c vitest.unit.config.ts --coverage",
+    "test:unit:watch": "pnpm run build:deps && vitest -c vitest.unit.config.ts",
+    "test:integration": "pnpm run build:deps && vitest run -c vitest.integration.config.ts",
+    "test:integration:coverage": "pnpm run build:deps && vitest run -c vitest.integration.config.ts --coverage",
+    "test:integration:local": "node ../../scripts/with-local-test-env.mjs pnpm run test:integration",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@auction-bonanza/contracts": "workspace:*",
+    "@confluentinc/kafka-javascript": "1.10.1",
+    "@sinclair/typebox": "0.34.52",
+    "pg": "8.16.3",
+    "pino": "10.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/pg": "8.15.5",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  },
+  "engines": {
+    "node": "24.20.0"
+  }
+}

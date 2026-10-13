@@ -1,6 +1,7 @@
 # Auction Finalization
 
-Status: implemented. Settlement (orders and payments) will consume its events.
+Status: implemented. Settlement consumes its events and creates orders
+([`SETTLEMENT.md`](SETTLEMENT.md)); charging the winner is not built yet.
 
 Finalization turns an auction whose deadline has passed into a closed one with a
 persisted outcome: a winning bid, or no winner when nothing was bid. It is the
@@ -18,7 +19,7 @@ outbox event have to commit in one PostgreSQL transaction.
 
 The consumer-side scenarios in `ACCEPTANCE.md` (killing a handler
 mid-message, delivering an event five times) belong to the settlement worker
-that will consume `AuctionClosed.v1`.
+that consumes `AuctionClosed.v1` ([`SETTLEMENT.md`](SETTLEMENT.md)).
 
 ## The close transaction
 
@@ -168,6 +169,10 @@ stays as an independent second layer.
   resyncs from `GET /v1/auctions/live-states` and sends a fresh `snapshot`
   showing the `closed` phase. A dedicated `closed` SSE event is a possible
   follow-up; it is not needed for correctness.
+- **Settlement.** A separate worker consumes `AuctionClosed.v1` and creates one
+  order for the winner of each sold auction, idempotently and with the winner
+  checked by the database. An unsold auction creates no order. See
+  [`SETTLEMENT.md`](SETTLEMENT.md).
 - **Consumers** must follow the rules in
   [`OUTBOX_PUBLISHING.md`](OUTBOX_PUBLISHING.md#consumer-obligations): de-duplicate
   on `eventId` and treat `auctionVersion` as the order.
@@ -195,4 +200,5 @@ The poll interval is also the worst-case lateness of a close after `ends_at`.
   finalizer already skips cancelled auctions.
 - Parking an auction after a number of failed attempts, or an alert beyond the
   error log. A failing auction is retried forever with a capped delay.
-- Settlement: creating an order and charging the winner.
+- Charging the winner. Settlement creates the order; nothing charges it yet
+  (see [`SETTLEMENT.md`](SETTLEMENT.md#not-covered-yet)).

@@ -11,13 +11,14 @@ Status: accepted as the initial direction; expected to evolve through deliberate
 
 ## Initial deployment units
 
-| Service            | Initial responsibility                                                                                                                                                                                                  |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `identity-service` | User registration, authentication, and user-owned data.                                                                                                                                                                 |
-| `auction-service`  | Auction lifecycle, synchronous bid acceptance, and finalization of ended auctions ([`FINALIZATION.md`](FINALIZATION.md)). Auctions and bids remain together initially because they share a strong correctness boundary. |
-| `realtime-gateway` | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid. Proposed design: [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md).                                          |
+| Service              | Initial responsibility                                                                                                                                                                                                  |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `identity-service`   | User registration, authentication, and user-owned data.                                                                                                                                                                 |
+| `auction-service`    | Auction lifecycle, synchronous bid acceptance, and finalization of ended auctions ([`FINALIZATION.md`](FINALIZATION.md)). Auctions and bids remain together initially because they share a strong correctness boundary. |
+| `realtime-gateway`   | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid. Proposed design: [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md).                                          |
+| `settlement-service` | Consume `AuctionClosed.v1` and create one order for the winner of each sold auction, idempotently. It owns `orders` and its processed-event record, and has no HTTP API. Design: [`SETTLEMENT.md`](SETTLEMENT.md).      |
 
-A settlement worker can be added when orders and payments enter scope. It would consume `AuctionClosed.v1`; auction closing itself is done by a finalizer inside `auction-service`.
+Auction closing itself is done by a finalizer inside `auction-service`, because the close and its event must commit with the auction aggregate. Settlement reacts to the committed fact, so it is a separate service. Charging the winner will extend it when payments enter scope.
 
 ## Request and event flow
 
@@ -31,8 +32,9 @@ Client
   |                                      |
   |                                      | transactional outbox
   |                                      v
-  |                                    Kafka
-  |                                      |
+  |                                    Kafka ---- settlement-service (consumer group)
+  |                                      |            |
+  |                                      |            `--> orders in auction_db
   |                          realtime-gateway relay (consumer group)
   |                                      |
   |                           Valkey sharded pub/sub
@@ -89,13 +91,16 @@ Even while the database is shared, table writes should have a clear owning servi
 - Use the promisified API from `@confluentinc/kafka-javascript`.
 - Use Kafka for asynchronous domain events, projections, notifications, settlement workflows, and replay.
 - Assume messages may be delivered more than once. Consumers must make required side effects idempotent.
-- Use a transactional outbox for PostgreSQL-to-Kafka publication. Add
-  processed-event records when consumers begin updating PostgreSQL.
+- Use a transactional outbox for PostgreSQL-to-Kafka publication. A consumer
+  that updates PostgreSQL records each processed event in the same transaction
+  as its effect and acknowledges the Kafka message only after that commit;
+  settlement does this (`settlement_processed_events`, see
+  [`SETTLEMENT.md`](SETTLEMENT.md)).
 - Give events stable metadata. Current JSON contracts use `eventId`, a
   versioned `eventType` such as `BidAccepted.v1`, `auctionId` as the aggregate
   identifier, `auctionVersion` as its ordered sequence, and `occurredAt`.
 - Initially key auction-related events by `auction_id` so ordering is preserved within an auction. Hot-auction behavior will be measured and revisited deliberately.
-- Publish all auction events to one topic, `auction.events`, so different event types of one auction share a partition and a single order. Topics are provisioned explicitly; automatic topic creation is disabled.
+- Publish all auction events to one topic, `auction.events`, so different event types of one auction share a partition and a single order. Topics are provisioned explicitly; automatic topic creation is disabled. The one other topic, `auction.events.dlq`, holds records the settlement worker could never process, copied unchanged with headers that say why.
 - Hold outbox row locks through Kafka publication and mark events published only after an `acks=all` acknowledgement. This trades one PostgreSQL connection per publication loop for clean normal-case ordering; the lease-based alternative is discussed in [`OUTBOX_PUBLISHING.md`](OUTBOX_PUBLISHING.md).
 
 Start with versioned JSON event schemas in `packages/contracts`. A schema registry and another encoding such as Avro or Protobuf can be introduced later as a separate compatibility exercise.

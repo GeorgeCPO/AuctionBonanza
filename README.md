@@ -60,9 +60,13 @@ the broker answers API requests. Automatic topic creation is disabled, so the
 one-shot `kafka-init` service provisions topics explicitly once Kafka is
 healthy:
 
-| Topic            | Partitions | Key         | Retention |
-| ---------------- | ---------- | ----------- | --------- |
-| `auction.events` | 12         | `auctionId` | 7 days    |
+| Topic                | Partitions | Key         | Retention |
+| -------------------- | ---------- | ----------- | --------- |
+| `auction.events`     | 12         | `auctionId` | 7 days    |
+| `auction.events.dlq` | 1          | as received | 30 days   |
+
+`auction.events.dlq` holds the records the settlement worker could never process
+(see [`docs/SETTLEMENT.md`](docs/SETTLEMENT.md#the-dead-letter-topic)).
 
 `kafka-init` is idempotent (`--if-not-exists`) and exits after printing the
 topic description; rerun it with `docker compose up kafka-init`. It never
@@ -123,13 +127,14 @@ pnpm test:e2e:local
 
 `tests/e2e` is the end-to-end suite. It compiles the services from source and
 runs each as its own process (the auction-service API, outbox publisher and
-finalizer, the relay, and the edge), then follows a bid from HTTP to an SSE
-client. It treats every service as a black box, so each service's own tests stay
-self-contained.
+finalizer, the relay, the edge, and the settlement worker), then follows a bid
+from HTTP to an SSE client, and a closed auction to its order. It treats every
+service as a black box, so each service's own tests stay self-contained.
 
-The outbox publisher tests, the finalizer tests and the end-to-end suite create
-and drop their own temporary databases from `db/schema.sql` (so the database user
-needs `CREATEDB`), and their own Kafka topics. The Kafka outage test needs port
+The outbox publisher tests, the finalizer tests, the settlement tests and the
+end-to-end suite create and drop their own temporary databases from
+`db/schema.sql` (so the database user needs `CREATEDB`), and their own Kafka
+topics. The Kafka outage test needs port
 `19092` free and reaches the broker through `TEST_KAFKA_FAULT_INJECTION_UPSTREAM`.
 
 ## Continuous integration
@@ -230,6 +235,19 @@ emits `AuctionClosed.v1` through the outbox, described in
 cp services/auction-service/.env.finalizer.example services/auction-service/.env.finalizer
 pnpm --filter @auction-bonanza/auction-service build
 pnpm --filter @auction-bonanza/auction-service start:finalizer:local
+```
+
+The settlement worker consumes `AuctionClosed.v1` and creates one order for the
+winner of each sold auction. It needs the `auction.events.dlq` topic, so run
+`kafka-init` again if your Kafka predates it. Its guarantees and failure
+behavior are in [`docs/SETTLEMENT.md`](docs/SETTLEMENT.md):
+
+```sh
+docker compose up kafka-init
+cp services/settlement-service/.env.settlement.example services/settlement-service/.env.settlement
+pnpm --filter @auction-bonanza/settlement-service build
+pnpm --filter @auction-bonanza/settlement-service start:local
+docker compose exec postgres psql -U auction auction_db -c 'SELECT * FROM orders'
 ```
 
 The realtime gateway's relay forwards those events from Kafka to the Valkey

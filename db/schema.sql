@@ -142,6 +142,76 @@ END;
 $$;
 
 
+--
+-- Name: order_reject_fact_change(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.order_reject_fact_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(NEW.id, NEW.auction_id, NEW.winning_bid_id, NEW.buyer_id, NEW.amount_minor,
+         NEW.currency_code, NEW.source_event_id, NEW.created_at)
+    IS DISTINCT FROM ROW(OLD.id, OLD.auction_id, OLD.winning_bid_id, OLD.buyer_id,
+                         OLD.amount_minor, OLD.currency_code, OLD.source_event_id,
+                         OLD.created_at) THEN
+    RAISE EXCEPTION 'the facts of order % are immutable', OLD.id
+      USING ERRCODE = 'check_violation',
+            CONSTRAINT = 'orders_facts_immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: order_require_winning_bid(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.order_require_winning_bid() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  auction_closed_at timestamp with time zone;
+  auction_winning_bid_id bigint;
+  auction_currency_code character varying(3);
+  bid_bidder_id bigint;
+  bid_amount_minor bigint;
+BEGIN
+  SELECT auctions.closed_at, auctions.winning_bid_id, auctions.currency_code,
+         bids.bidder_id, bids.amount_minor
+  INTO auction_closed_at, auction_winning_bid_id, auction_currency_code,
+       bid_bidder_id, bid_amount_minor
+  FROM auctions
+  LEFT JOIN bids ON bids.auction_id = auctions.id AND bids.id = auctions.winning_bid_id
+  WHERE auctions.id = NEW.auction_id;
+
+  IF NOT FOUND OR auction_closed_at IS NULL THEN
+    RAISE EXCEPTION 'order for auction % requires a closed auction', NEW.auction_id
+      USING ERRCODE = 'check_violation',
+            CONSTRAINT = 'orders_auction_closed';
+  END IF;
+
+  IF auction_winning_bid_id IS DISTINCT FROM NEW.winning_bid_id THEN
+    RAISE EXCEPTION 'order for auction % names bid %, but the winning bid is %',
+      NEW.auction_id, NEW.winning_bid_id, auction_winning_bid_id
+      USING ERRCODE = 'check_violation',
+            CONSTRAINT = 'orders_winning_bid_is_auction_winner';
+  END IF;
+
+  IF ROW(NEW.buyer_id, NEW.amount_minor, NEW.currency_code)
+    IS DISTINCT FROM ROW(bid_bidder_id, bid_amount_minor, auction_currency_code) THEN
+    RAISE EXCEPTION 'order for auction % does not match the terms of winning bid %',
+      NEW.auction_id, NEW.winning_bid_id
+      USING ERRCODE = 'check_violation',
+            CONSTRAINT = 'orders_terms_match_winning_bid';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -267,6 +337,38 @@ CREATE TABLE public.identity_sessions (
 
 
 --
+-- Name: orders; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.orders (
+    id bigint NOT NULL,
+    auction_id bigint NOT NULL,
+    winning_bid_id bigint NOT NULL,
+    buyer_id bigint NOT NULL,
+    amount_minor bigint NOT NULL,
+    currency_code character varying(3) NOT NULL,
+    source_event_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT orders_amount_minor_check CHECK ((amount_minor > 0)),
+    CONSTRAINT orders_currency_code_check CHECK (((currency_code)::text ~ '^[A-Z]{3}$'::text))
+);
+
+
+--
+-- Name: orders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.orders ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.orders_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: outbox_events; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -297,6 +399,20 @@ CREATE TABLE public.outbox_events (
 
 CREATE TABLE public.schema_migrations (
     version character varying NOT NULL
+);
+
+
+--
+-- Name: settlement_processed_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.settlement_processed_events (
+    event_id uuid NOT NULL,
+    event_type character varying(100) NOT NULL,
+    auction_id bigint NOT NULL,
+    auction_version bigint NOT NULL,
+    processed_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT settlement_processed_events_auction_version_check CHECK ((auction_version >= 1))
 );
 
 
@@ -384,6 +500,30 @@ ALTER TABLE ONLY public.identity_sessions
 
 
 --
+-- Name: orders orders_auction_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_auction_id_key UNIQUE (auction_id);
+
+
+--
+-- Name: orders orders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: orders orders_source_event_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_source_event_id_key UNIQUE (source_event_id);
+
+
+--
 -- Name: outbox_events outbox_events_auction_version_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -405,6 +545,14 @@ ALTER TABLE ONLY public.outbox_events
 
 ALTER TABLE ONLY public.schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
+
+
+--
+-- Name: settlement_processed_events settlement_processed_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.settlement_processed_events
+    ADD CONSTRAINT settlement_processed_events_pkey PRIMARY KEY (event_id);
 
 
 --
@@ -528,6 +676,20 @@ CREATE TRIGGER auctions_winner_on_close BEFORE UPDATE ON public.auctions FOR EAC
 
 
 --
+-- Name: orders orders_immutable_facts; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER orders_immutable_facts BEFORE UPDATE ON public.orders FOR EACH ROW EXECUTE FUNCTION public.order_reject_fact_change();
+
+
+--
+-- Name: orders orders_winning_bid; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER orders_winning_bid BEFORE INSERT ON public.orders FOR EACH ROW EXECUTE FUNCTION public.order_require_winning_bid();
+
+
+--
 -- Name: outbox_events outbox_events_current_auction_version; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -606,6 +768,30 @@ ALTER TABLE ONLY public.identity_sessions
 
 
 --
+-- Name: orders orders_buyer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_buyer_id_fkey FOREIGN KEY (buyer_id) REFERENCES public.users(id);
+
+
+--
+-- Name: orders orders_source_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_source_event_id_fkey FOREIGN KEY (source_event_id) REFERENCES public.settlement_processed_events(event_id);
+
+
+--
+-- Name: orders orders_winning_bid_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_winning_bid_id_fkey FOREIGN KEY (auction_id, winning_bid_id) REFERENCES public.bids(auction_id, id);
+
+
+--
 -- Name: outbox_events outbox_events_auction_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -636,4 +822,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260923100000'),
     ('20260929120000'),
     ('20261012100000'),
-    ('20261013100000');
+    ('20261013100000'),
+    ('20261013120000'),
+    ('20261013120100');

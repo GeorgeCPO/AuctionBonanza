@@ -6,5 +6,6 @@ coverage/
 .env.outbox-publisher
 .env.relay
 .env.edge
+.env.settlement
 .DS_Store
 services/identity-service/.local-keys/
