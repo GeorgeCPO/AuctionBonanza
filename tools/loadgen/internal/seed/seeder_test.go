@@ -188,11 +188,12 @@ func TestRunStaysWithinTheConcurrencyLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if creator.peak.Load() > 4 {
-		t.Errorf("%d requests were in flight, limit is 4", creator.peak.Load())
+	peak := creator.peak.Load()
+	if peak > 4 {
+		t.Errorf("%d requests were in flight, limit is 4", peak)
 	}
-	if creator.peak.Load() < 2 {
-		t.Errorf("peak in flight was %d, so requests did not overlap", creator.peak.Load())
+	if peak < 2 {
+		t.Errorf("peak in flight was %d, so requests did not overlap", peak)
 	}
 }
 
@@ -216,8 +217,9 @@ func TestRunRetriesAnUnsentRequestAndNothingElse(t *testing.T) {
 	if manifest.Failed != 0 || len(manifest.Auctions) != 40 {
 		t.Fatalf("dial failures were not retried: %d created, %d failed", len(manifest.Auctions), manifest.Failed)
 	}
-	if creator.calls.Load() <= 40 {
-		t.Fatalf("only %d requests were sent, so nothing was retried", creator.calls.Load())
+	sent := creator.calls.Load()
+	if sent <= 40 {
+		t.Fatalf("only %d requests were sent, so nothing was retried", sent)
 	}
 }
 
@@ -238,8 +240,9 @@ func TestRunDoesNotRetryAnUnknownOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if creator.calls.Load() != 5 {
-		t.Errorf("%d requests were sent for 5 auctions; the lost one must not be sent again", creator.calls.Load())
+	sent := creator.calls.Load()
+	if sent != 5 {
+		t.Errorf("%d requests were sent for 5 auctions; the lost one must not be sent again", sent)
 	}
 	if manifest.Failed != 1 || len(manifest.Auctions) != 4 {
 		t.Errorf("expected 4 created and 1 failed, got %d and %d", len(manifest.Auctions), manifest.Failed)
@@ -261,8 +264,9 @@ func TestRunGivesUpAfterThreeUnsentAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if creator.calls.Load() != 6 {
-		t.Errorf("%d attempts for 2 auctions, want 3 each", creator.calls.Load())
+	attempts := creator.calls.Load()
+	if attempts != 6 {
+		t.Errorf("%d attempts for 2 auctions, want 3 each", attempts)
 	}
 	if manifest.Failed != 2 || len(manifest.Auctions) != 0 {
 		t.Errorf("expected 2 failures and no auctions, got %d and %d", manifest.Failed, len(manifest.Auctions))

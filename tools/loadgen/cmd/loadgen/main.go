@@ -15,7 +15,7 @@ const usage = `usage: loadgen <command> [flags]
 commands:
   seed     create users and auctions and write a manifest
   token    print an access token for a user id, for trying the API by hand
-  sample   poll PostgreSQL and Kafka and write CSV (added in a later commit)
+  sample   poll PostgreSQL and Kafka every second and write CSV until stopped
 
 Run "loadgen <command> -h" for a command's flags. Paths default to running
 from the repository root.`
@@ -36,6 +36,8 @@ func run(args []string) int {
 	switch args[0] {
 	case "seed":
 		return runSeed(ctx, args[1:])
+	case "sample":
+		return runSample(ctx, args[1:])
 	case "token":
 		return runToken(args[1:])
 	case "-h", "--help", "help":
