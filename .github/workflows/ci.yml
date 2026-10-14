@@ -48,6 +48,12 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      # The load tool is Go; its version comes from tools/loadgen/go.mod.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tools/loadgen/go.mod
+          cache-dependency-path: tools/loadgen/go.sum
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -108,6 +114,14 @@ jobs:
 
       - name: End-to-end tests
         run: pnpm test:e2e
+
+      # The Go load tool has its own gate. Its integration tests refuse to
+      # start when a TEST_* variable is missing, like the other tiers.
+      - name: Load tool checks
+        run: pnpm loadgen:check
+
+      - name: Load tool integration tests
+        run: pnpm loadgen:test:integration
 
       - name: Print infrastructure diagnostics
         if: failure()
