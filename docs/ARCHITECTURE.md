@@ -18,6 +18,12 @@ Status: accepted as the initial direction; expected to evolve through deliberate
 | `realtime-gateway`   | Consume published auction events and stream live updates to clients. It does not decide whether a bid is valid. Proposed design: [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md).                                          |
 | `settlement-service` | Consume `AuctionClosed.v1` and create one order for the winner of each sold auction, idempotently. It owns `orders` and its processed-event record, and has no HTTP API. Design: [`SETTLEMENT.md`](SETTLEMENT.md).      |
 
+`tools/loadgen` is not a service. It is a Go tool that seeds data and samples
+PostgreSQL and Kafka for the scale scenarios, kept separate from the TypeScript
+services and sharing no code with them (see [its README](../tools/loadgen/README.md)).
+Go was chosen for it because load generation is where its concurrency model
+helps, and because a failure there cannot affect auction correctness.
+
 Auction closing itself is done by a finalizer inside `auction-service`, because the close and its event must commit with the auction aggregate. Settlement reacts to the committed fact, so it is a separate service. Charging the winner will extend it when payments enter scope.
 
 ## Request and event flow
