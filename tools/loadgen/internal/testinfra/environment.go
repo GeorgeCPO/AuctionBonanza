@@ -15,7 +15,8 @@ import (
 func RequireEnvironment(names ...string) {
 	var missing []string
 	for _, name := range names {
-		if os.Getenv(name) == "" {
+		value := os.Getenv(name)
+		if value == "" {
 			missing = append(missing, name)
 		}
 	}
