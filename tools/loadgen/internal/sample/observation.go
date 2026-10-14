@@ -67,47 +67,58 @@ type Observation struct {
 }
 
 // Observe derives rates by comparing each fresh reading with the last good
-// reading of the same source. Using the last good one, not the last tick, keeps
-// a rate honest across a gap: the delta is divided by the time it really spans.
-// A counter that went down (for example a database that was reset) gives no
-// rate for that tick.
-func Observe(at time.Time, postgres *PostgresSnapshot, kafka *KafkaSnapshot, previousPostgres *Timed[PostgresSnapshot], previousKafka *Timed[KafkaSnapshot]) Observation {
-	observation := Observation{At: at, Postgres: postgres, Kafka: kafka}
+// reading of the same source, each divided by the time between the moments the
+// two were actually read. Using the last good one, not the last tick, keeps a
+// rate honest across a gap, and using each reading's own time keeps it honest
+// when a slow read delayed one source more than the other. A counter that went
+// down (for example a database that was reset) gives no rate for that tick.
+func Observe(at time.Time, postgres *Timed[PostgresSnapshot], kafka *Timed[KafkaSnapshot], previousPostgres *Timed[PostgresSnapshot], previousKafka *Timed[KafkaSnapshot]) Observation {
+	observation := Observation{At: at}
 
-	if postgres != nil && previousPostgres != nil {
-		elapsed := at.Sub(previousPostgres.At).Seconds()
-		observation.BidRate = rate(previousPostgres.Value.BidsIssued, postgres.BidsIssued, elapsed)
-		observation.OrderRate = rate(previousPostgres.Value.OrdersIssued, postgres.OrdersIssued, elapsed)
+	if postgres != nil {
+		observation.Postgres = &postgres.Value
+		if previousPostgres != nil {
+			elapsed := postgres.At.Sub(previousPostgres.At).Seconds()
+			observation.BidRate = rate(previousPostgres.Value.BidsIssued, postgres.Value.BidsIssued, elapsed)
+			observation.OrderRate = rate(previousPostgres.Value.OrdersIssued, postgres.Value.OrdersIssued, elapsed)
+		}
 	}
 
-	if kafka != nil && previousKafka != nil {
-		elapsed := at.Sub(previousKafka.At).Seconds()
-		before := make(map[int32]int64, len(previousKafka.Value.Partitions))
-		for _, partition := range previousKafka.Value.Partitions {
-			before[partition.Partition] = partition.EndOffset
-		}
-
-		observation.ProduceRates = make(map[int32]float64, len(kafka.Partitions))
-		var total float64
-		var counted bool
-		for _, partition := range kafka.Partitions {
-			previousEnd, known := before[partition.Partition]
-			if !known {
-				continue
-			}
-			partitionRate := rate(previousEnd, partition.EndOffset, elapsed)
-			if partitionRate == nil {
-				continue
-			}
-			observation.ProduceRates[partition.Partition] = *partitionRate
-			total += *partitionRate
-			counted = true
-		}
-		if counted {
-			observation.EventRate = &total
+	if kafka != nil {
+		observation.Kafka = &kafka.Value
+		if previousKafka != nil {
+			observation.ProduceRates, observation.EventRate = produceRates(*previousKafka, *kafka)
 		}
 	}
 	return observation
+}
+
+// produceRates are per-partition rates, and their sum when any partition has one.
+func produceRates(previous, current Timed[KafkaSnapshot]) (map[int32]float64, *float64) {
+	elapsed := current.At.Sub(previous.At).Seconds()
+	before := make(map[int32]int64, len(previous.Value.Partitions))
+	for _, partition := range previous.Value.Partitions {
+		before[partition.Partition] = partition.EndOffset
+	}
+
+	rates := make(map[int32]float64, len(current.Value.Partitions))
+	var total float64
+	for _, partition := range current.Value.Partitions {
+		previousEnd, known := before[partition.Partition]
+		if !known {
+			continue
+		}
+		partitionRate := rate(previousEnd, partition.EndOffset, elapsed)
+		if partitionRate == nil {
+			continue
+		}
+		rates[partition.Partition] = *partitionRate
+		total += *partitionRate
+	}
+	if len(rates) == 0 {
+		return rates, nil
+	}
+	return rates, &total
 }
 
 func rate(before, after int64, elapsedSeconds float64) *float64 {

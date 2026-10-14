@@ -19,21 +19,21 @@ func TestBuildPlanRotatesOwnersAndIsDeterministic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(first.Auctions) != 10 {
-		t.Fatalf("planned %d auctions, want 10", len(first.Auctions))
+	if len(first) != 10 {
+		t.Fatalf("planned %d auctions, want 10", len(first))
 	}
-	for i, request := range first.Auctions {
+	for i, request := range first {
 		if request.OwnerIndex != i%4 {
 			t.Errorf("auction %d owned by user %d, want %d", i, request.OwnerIndex, i%4)
 		}
-		if request != second.Auctions[i] {
+		if request != second[i] {
 			t.Errorf("auction %d differs between two builds of one spec", i)
 		}
 		if request.Duration != 7*24*time.Hour || request.CurrencyCode != "USD" {
 			t.Errorf("auction %d lost the spec's duration or currency: %+v", i, request)
 		}
 	}
-	if first.Auctions[0].Title == first.Auctions[1].Title {
+	if first[0].Title == first[1].Title {
 		t.Error("titles are not unique")
 	}
 }
@@ -64,7 +64,7 @@ func TestBuildPlanAllowsZeroAuctions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Auctions) != 0 {
-		t.Fatalf("planned %d auctions, want none", len(plan.Auctions))
+	if len(plan) != 0 {
+		t.Fatalf("planned %d auctions, want none", len(plan))
 	}
 }

@@ -48,11 +48,3 @@ func run(args []string) int {
 		return 2
 	}
 }
-
-func environmentOr(name, fallback string) string {
-	value := os.Getenv(name)
-	if value == "" {
-		return fallback
-	}
-	return value
-}

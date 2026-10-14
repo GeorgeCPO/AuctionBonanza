@@ -40,13 +40,13 @@ func decodeSegment(t *testing.T, segment string, into any) {
 
 func TestMintProducesATokenAuctionServiceCanVerify(t *testing.T) {
 	key := newTestKey(t)
-	minter, err := New(key, "local-test", "http://localhost:3001", "auction-api")
+	minter, err := New(key, "local-test", "http://localhost:3001", "auction-api", 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Unix(1_800_000_000, 0)
 
-	value, err := minter.Mint("42", now, 10*time.Minute)
+	value, err := minter.Mint("42", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,14 +90,14 @@ func TestMintProducesATokenAuctionServiceCanVerify(t *testing.T) {
 }
 
 func TestMintGivesEveryTokenItsOwnIDs(t *testing.T) {
-	minter, err := New(newTestKey(t), "k", "iss", "aud")
+	minter, err := New(newTestKey(t), "k", "iss", "aud", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
 
-	first, _ := minter.Mint("1", now, time.Minute)
-	second, _ := minter.Mint("1", now, time.Minute)
+	first, _ := minter.Mint("1", now)
+	second, _ := minter.Mint("1", now)
 	if first == second {
 		t.Fatal("two tokens for the same user were identical")
 	}
@@ -108,14 +108,21 @@ func TestNewRejectsWrongCurveAndMissingFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = New(p384, "k", "iss", "aud")
+	_, err = New(p384, "k", "iss", "aud", time.Minute)
 	if err == nil {
 		t.Error("P-384 key was accepted")
 	}
 
-	_, err = New(newTestKey(t), "", "iss", "aud")
+	_, err = New(newTestKey(t), "", "iss", "aud", time.Minute)
 	if err == nil {
 		t.Error("empty key id was accepted")
+	}
+
+	for _, ttl := range []time.Duration{0, -time.Second} {
+		_, err = New(newTestKey(t), "k", "iss", "aud", ttl)
+		if err == nil {
+			t.Errorf("token lifetime %s was accepted; it would mint tokens that are already expired", ttl)
+		}
 	}
 }
 
@@ -137,11 +144,11 @@ func TestLoadReadsTheLocalKeyMaterial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	minter, err := Load(keyPath, jwksPath, "http://localhost:3001", "auction-api")
+	minter, err := Load(keyPath, jwksPath, "http://localhost:3001", "auction-api", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := minter.Mint("7", time.Now(), time.Minute)
+	value, err := minter.Mint("7", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +161,7 @@ func TestLoadReadsTheLocalKeyMaterial(t *testing.T) {
 }
 
 func TestLoadReportsMissingFiles(t *testing.T) {
-	_, err := Load("/nonexistent/key.pem", "/nonexistent/jwks.json", "iss", "aud")
+	_, err := Load("/nonexistent/key.pem", "/nonexistent/jwks.json", "iss", "aud", time.Minute)
 	if err == nil {
 		t.Fatal("expected an error for a missing key file")
 	}

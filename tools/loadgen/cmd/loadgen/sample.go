@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,11 +19,12 @@ import (
 
 func runSample(ctx context.Context, args []string) int {
 	flags := flag.NewFlagSet("sample", flag.ContinueOnError)
-	databaseURL := flags.String("database-url", environmentOr("DATABASE_URL", "postgresql://auction:auction_local@localhost:5432/auction_db"), "PostgreSQL URL (DATABASE_URL)")
-	brokers := flags.String("brokers", environmentOr("KAFKA_BROKERS", "localhost:9092"), "comma-separated Kafka brokers (KAFKA_BROKERS)")
-	topic := flags.String("topic", environmentOr("AUCTION_EVENTS_TOPIC", "auction.events"), "topic to watch (AUCTION_EVENTS_TOPIC)")
+	databaseURL := databaseURLFlag(flags)
+	brokers := brokersFlag(flags)
+	topic := topicFlag(flags)
 	groups := flags.String("groups", "realtime-relay,settlement-worker", "consumer groups whose lag to track")
 	interval := flags.Duration("interval", time.Second, "time between samples")
+	readTimeout := flags.Duration("read-timeout", 5*time.Second, "how long one sample may wait for PostgreSQL and Kafka before leaving a gap")
 	duration := flags.Duration("duration", 0, "stop after this long (0 runs until interrupted)")
 	outDir := flags.String("out-dir", filepath.Join("tools/loadgen/out", "samples-"+time.Now().Format("20060102-150405")), "directory for samples.csv, partitions.csv and summary.txt")
 	err := flags.Parse(args)
@@ -40,9 +41,9 @@ func runSample(ctx context.Context, args []string) int {
 		return 1
 	}
 	poolConfig.MaxConns = 2
-	// A sampler that waits on a locked or overloaded database would hide the
-	// very condition it exists to report.
-	poolConfig.ConnConfig.RuntimeParams["statement_timeout"] = "2000"
+	// The database gives up when the sampler does, so an overloaded server is not
+	// left running a query nobody waits for.
+	poolConfig.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(readTimeout.Milliseconds(), 10)
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		logger.Error("connect to PostgreSQL", "error", err)
@@ -84,7 +85,7 @@ func runSample(ctx context.Context, args []string) int {
 		sample.NewPostgresCollector(pool),
 		sample.NewKafkaCollector(kadm.NewClient(kafkaClient), *topic, groupNames),
 		recorder,
-		sample.SamplerOptions{Interval: *interval, Logger: logger},
+		sample.SamplerOptions{Interval: *interval, ReadTimeout: *readTimeout, Logger: logger},
 	)
 
 	if *duration > 0 {
@@ -108,15 +109,4 @@ func runSample(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
-}
-
-func splitList(value string) []string {
-	var items []string
-	for _, item := range strings.Split(value, ",") {
-		trimmed := strings.TrimSpace(item)
-		if trimmed != "" {
-			items = append(items, trimmed)
-		}
-	}
-	return items
 }

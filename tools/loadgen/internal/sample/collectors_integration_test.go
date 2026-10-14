@@ -31,8 +31,17 @@ func exec(t *testing.T, pool *pgxpool.Pool, sql string, arguments ...any) {
 	}
 }
 
+// insertAuction adds one open auction owned by user 'a', which the caller has
+// inserted.
+func insertAuction(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	exec(t, pool, `
+		INSERT INTO auctions (owner_id, starts_at, ends_at, starting_price_minor, description, title, currency_code, minimum_bid_increment_minor)
+		SELECT id, now() - interval '1 hour', now() + interval '1 hour', 1000, 'd', 't', 'USD', 100 FROM users WHERE username = 'a'`)
+}
+
 func TestPostgresCollectorOnAnEmptyDatabase(t *testing.T) {
-	pool := testinfra.NewDatabase(t, os.Getenv("TEST_DATABASE_URL"))
+	pool := testinfra.NewDatabase(t)
 
 	snapshot, err := NewPostgresCollector(pool).Collect(context.Background())
 	if err != nil {
@@ -46,11 +55,9 @@ func TestPostgresCollectorOnAnEmptyDatabase(t *testing.T) {
 
 func TestPostgresCollectorReadsCountersAndTheOutbox(t *testing.T) {
 	ctx := context.Background()
-	pool := testinfra.NewDatabase(t, os.Getenv("TEST_DATABASE_URL"))
+	pool := testinfra.NewDatabase(t)
 	exec(t, pool, `INSERT INTO users (username, password_hash, email) VALUES ('a', 'x', 'a@example.test'), ('b', 'x', 'b@example.test')`)
-	exec(t, pool, `
-		INSERT INTO auctions (owner_id, starts_at, ends_at, starting_price_minor, description, title, currency_code, minimum_bid_increment_minor)
-		SELECT id, now() - interval '1 hour', now() + interval '1 hour', 1000, 'd', 't', 'USD', 100 FROM users WHERE username = 'a'`)
+	insertAuction(t, pool)
 	exec(t, pool, `
 		INSERT INTO bids (auction_id, bidder_id, amount_minor, idempotency_key, created_at)
 		SELECT a.id, u.id, 1000 + n * 100, 'k' || n, now()
@@ -59,7 +66,13 @@ func TestPostgresCollectorReadsCountersAndTheOutbox(t *testing.T) {
 	// One unpublished event. The schema requires a version bump and its event
 	// to commit together, so both go in one transaction.
 	const eventID = "00000000-0000-4000-8000-000000000001"
-	occurredAt := time.Now().Add(-3 * time.Second).UTC().Format(time.RFC3339Nano)
+	// Three seconds before now by the database's clock, not the test host's: the
+	// collector measures age with the database's clock, and the two can differ.
+	var occurredAt string
+	err := pool.QueryRow(ctx, `SELECT to_char((clock_timestamp() - interval '3 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`).Scan(&occurredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	transaction, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -113,11 +126,9 @@ func TestPostgresCollectorReadsCountersAndTheOutbox(t *testing.T) {
 // A hot auction's signature: one transaction holds the row, another waits on it.
 func TestPostgresCollectorSeesALockWaiterAndAnIdleTransaction(t *testing.T) {
 	ctx := context.Background()
-	pool := testinfra.NewDatabase(t, os.Getenv("TEST_DATABASE_URL"))
+	pool := testinfra.NewDatabase(t)
 	exec(t, pool, `INSERT INTO users (username, password_hash, email) VALUES ('a', 'x', 'a@example.test')`)
-	exec(t, pool, `
-		INSERT INTO auctions (owner_id, starts_at, ends_at, starting_price_minor, description, title, currency_code, minimum_bid_increment_minor)
-		SELECT id, now() - interval '1 hour', now() + interval '1 hour', 1000, 'd', 't', 'USD', 100 FROM users`)
+	insertAuction(t, pool)
 
 	holder, err := pool.Begin(ctx)
 	if err != nil {
@@ -174,7 +185,7 @@ func TestPostgresCollectorSeesALockWaiterAndAnIdleTransaction(t *testing.T) {
 
 func TestKafkaCollectorReadsOffsetsAndGroupLag(t *testing.T) {
 	ctx := context.Background()
-	client := testinfra.NewKafka(t, os.Getenv("TEST_KAFKA_BROKERS"))
+	client := testinfra.NewKafka(t)
 	const partitions = 4
 	topic := testinfra.NewTopic(t, client, partitions)
 
@@ -227,7 +238,7 @@ func TestKafkaCollectorReadsOffsetsAndGroupLag(t *testing.T) {
 	}
 
 	// Partitions 2 and 3 have no commit, so their whole contents are lag.
-	wantLag := (expected[0] - min(2, expected[0])) + 0 + expected[2] + expected[3]
+	wantLag := (expected[0] - min(2, expected[0])) + expected[2] + expected[3]
 	if snapshot.GroupLag["partly-committed"] != wantLag {
 		t.Errorf("lag %d, want %d", snapshot.GroupLag["partly-committed"], wantLag)
 	}
@@ -244,7 +255,7 @@ func TestKafkaCollectorReadsOffsetsAndGroupLag(t *testing.T) {
 }
 
 func TestKafkaCollectorReportsAMissingTopic(t *testing.T) {
-	client := testinfra.NewKafka(t, os.Getenv("TEST_KAFKA_BROKERS"))
+	client := testinfra.NewKafka(t)
 
 	_, err := NewKafkaCollector(kadm.NewClient(client), "loadgen-test-no-such-topic", nil).Collect(context.Background())
 

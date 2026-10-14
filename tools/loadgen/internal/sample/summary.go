@@ -1,9 +1,11 @@
 package sample
 
 import (
+	"cmp"
 	"fmt"
 	"io"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -157,12 +159,7 @@ func (s Summary) Write(w io.Writer) {
 	fmt.Fprintf(w, "connections: peak %d waiting on a lock, peak %d idle in transaction\n",
 		s.PeakLockWaiters, s.PeakIdleInTransaction)
 
-	groups := make([]string, 0, len(s.PeakGroupLag))
-	for group := range s.PeakGroupLag {
-		groups = append(groups, group)
-	}
-	sort.Strings(groups)
-	for _, group := range groups {
+	for _, group := range slices.Sorted(maps.Keys(s.PeakGroupLag)) {
 		fmt.Fprintf(w, "group %s: peak lag %d, final lag %d\n", group, s.PeakGroupLag[group], s.FinalGroupLag[group])
 	}
 
@@ -194,7 +191,9 @@ func produced(first, last KafkaSnapshot) []PartitionSummary {
 			summaries[i].Share = float64(summaries[i].Produced) / float64(total)
 		}
 	}
-	sort.Slice(summaries, func(a, b int) bool { return summaries[a].Partition < summaries[b].Partition })
+	slices.SortFunc(summaries, func(a, b PartitionSummary) int {
+		return cmp.Compare(a.Partition, b.Partition)
+	})
 	return summaries
 }
 

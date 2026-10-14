@@ -23,7 +23,7 @@ func (f fakeUsers) EnsureUsers(_ context.Context, count int) ([]User, error) {
 	}
 	users := make([]User, count)
 	for i := range users {
-		users[i] = User{ID: strconv.Itoa(100 + i), Email: fmt.Sprintf("loadgen-%d@loadgen.invalid", i+1)}
+		users[i] = User{ID: strconv.Itoa(100 + i), Email: fmt.Sprintf(userEmailFormat, i+1)}
 	}
 	return users, nil
 }
@@ -31,14 +31,12 @@ func (f fakeUsers) EnsureUsers(_ context.Context, count int) ([]User, error) {
 type fakeTokens struct {
 	mu    sync.Mutex
 	calls []string
-	ttls  []time.Duration
 }
 
-func (f *fakeTokens) Mint(userID string, _ time.Time, ttl time.Duration) (string, error) {
+func (f *fakeTokens) Mint(userID string, _ time.Time) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, userID)
-	f.ttls = append(f.ttls, ttl)
 	return "token-for-" + userID, nil
 }
 
@@ -118,12 +116,13 @@ func TestRunCreatesEveryAuctionAndRecordsItsPartition(t *testing.T) {
 		t.Errorf("manifest lists %d users, want 5", len(manifest.Users))
 	}
 
+	counts := manifest.PartitionCounts()
 	total := 0
-	for _, count := range manifest.PartitionCounts {
+	for _, count := range counts {
 		total += count
 	}
-	if total != 240 || len(manifest.PartitionCounts) != 12 {
-		t.Errorf("partition counts %v do not add up to the 240 created auctions", manifest.PartitionCounts)
+	if total != 240 || len(counts) != 12 {
+		t.Errorf("partition counts %v do not add up to the 240 created auctions", counts)
 	}
 	for _, auction := range manifest.Auctions {
 		want := murmur2.PartitionForKey(auction.ID, 12)
@@ -133,11 +132,9 @@ func TestRunCreatesEveryAuctionAndRecordsItsPartition(t *testing.T) {
 	}
 }
 
-func TestRunMintsTokensForTheOwnerWithTheConfiguredTTL(t *testing.T) {
+func TestRunMintsTokensForTheOwners(t *testing.T) {
 	tokens := &fakeTokens{}
-	options := testOptions()
-	options.TokenTTL = 9 * time.Minute
-	seeder := NewSeeder(fakeUsers{}, &fakeCreator{}, tokens, options)
+	seeder := NewSeeder(fakeUsers{}, &fakeCreator{}, tokens, testOptions())
 
 	_, err := seeder.Run(context.Background(), testSpec(10))
 	if err != nil {
@@ -153,11 +150,6 @@ func TestRunMintsTokensForTheOwnerWithTheConfiguredTTL(t *testing.T) {
 	}
 	if len(owners) != 5 {
 		t.Errorf("tokens were minted for %d distinct users, want 5", len(owners))
-	}
-	for _, ttl := range tokens.ttls {
-		if ttl != 9*time.Minute {
-			t.Errorf("token ttl %s, want 9m", ttl)
-		}
 	}
 }
 
@@ -302,11 +294,46 @@ func TestRunStopsWhenTheContextEnds(t *testing.T) {
 
 	manifest, err := seeder.Run(ctx, testSpec(1000))
 
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
+	var interrupted *InterruptedError
+	if !errors.As(err, &interrupted) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected an InterruptedError caused by context.Canceled, got %v", err)
 	}
 	if len(manifest.Auctions) < 9 || len(manifest.Auctions) >= 1000 {
 		t.Errorf("partial manifest has %d auctions, expected about 10", len(manifest.Auctions))
+	}
+}
+
+func TestRunReturnsNoManifestForSetupErrors(t *testing.T) {
+	seeder := NewSeeder(fakeUsers{err: errors.New("db down")}, &fakeCreator{}, &fakeTokens{}, testOptions())
+
+	manifest, err := seeder.Run(context.Background(), testSpec(5))
+
+	var interrupted *InterruptedError
+	if err == nil || errors.As(err, &interrupted) {
+		t.Fatalf("a setup failure must be a plain error, got %v", err)
+	}
+	if len(manifest.Users) != 0 || len(manifest.Auctions) != 0 {
+		t.Errorf("setup failure returned a manifest: %+v", manifest)
+	}
+}
+
+func TestRunRejectsMissingRequiredOptions(t *testing.T) {
+	cases := map[string]func(*Options){
+		"no partitions":  func(o *Options) { o.Partitions = 0 },
+		"no concurrency": func(o *Options) { o.Concurrency = 0 },
+	}
+
+	for name, mutate := range cases {
+		options := testOptions()
+		mutate(&options)
+		creator := &fakeCreator{}
+		seeder := NewSeeder(fakeUsers{}, creator, &fakeTokens{}, options)
+
+		_, err := seeder.Run(context.Background(), testSpec(5))
+
+		if err == nil || creator.calls.Load() != 0 {
+			t.Errorf("%s: ran anyway (err %v, %d requests); zero workers would hang the feed", name, err, creator.calls.Load())
+		}
 	}
 }
 

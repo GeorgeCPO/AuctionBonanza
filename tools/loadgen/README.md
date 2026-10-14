@@ -12,9 +12,9 @@ has two jobs:
 A bid generator, an SSE client swarm and a Kafka backlog producer come later and
 reuse the packages here (`token`, `murmur2`, the manifest).
 
-It is Go because that is the natural language for load tools, and because a
-failure here cannot produce a wrong winner or a duplicate order. The Go version
-is the `go` line in `go.mod`; dependencies are pinned by `go.mod` and `go.sum`.
+Why it is Go is explained in [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
+The Go version is the `go` line in `go.mod`; dependencies are pinned by `go.mod`
+and `go.sum`.
 
 Run everything from the repository root. Defaults for key and output paths are
 relative to it.
@@ -34,20 +34,21 @@ JWKS to verify tokens).
 tools/loadgen/bin/loadgen seed --users 100 --auctions 1000
 ```
 
-| Flag                     | Default                                    | Meaning                                                                  |
-| ------------------------ | ------------------------------------------ | ------------------------------------------------------------------------ |
-| `--users`                | 100                                        | Seeded users, at least 2 so bidders can differ from owners               |
-| `--auctions`             | 1000                                       | Auctions to create; owners rotate through the users                      |
-| `--concurrency`          | 16                                         | Requests in flight                                                       |
-| `--duration`             | 168h                                       | How long each auction stays open (2 minutes to 29 days)                  |
-| `--currency`             | USD                                        | Must be in auction-service's `SUPPORTED_CURRENCY_CODES`                  |
-| `--partitions`           | 12                                         | Partitions of `auction.events`, used to compute each auction's partition |
-| `--out`                  | `tools/loadgen/out/manifest.json`          | Manifest path                                                            |
-| `--database-url`         | `DATABASE_URL`, the Compose database       | PostgreSQL                                                               |
-| `--api-url`              | `AUCTION_API_URL`, `http://localhost:3002` | auction-service                                                          |
-| `--key`, `--jwks`        | `services/identity-service/.local-keys/…`  | Signing material from `pnpm auth:keys:local`                             |
-| `--issuer`, `--audience` | `AUTH_ISSUER`, `AUTH_AUDIENCE`             | Must match auction-service's `AUTH_ISSUER` and `AUTH_AUDIENCE`           |
-| `--token-ttl`            | 5m                                         | At most auction-service's `ACCESS_TOKEN_TTL_SECONDS`                     |
+| Flag                     | Default                                    | Meaning                                                           |
+| ------------------------ | ------------------------------------------ | ----------------------------------------------------------------- |
+| `--users`                | 100                                        | Seeded users, at least 2 so bidders can differ from owners        |
+| `--auctions`             | 1000                                       | Auctions to create; owners rotate through the users               |
+| `--concurrency`          | 16                                         | Requests in flight                                                |
+| `--duration`             | 168h                                       | How long each auction stays open (2 minutes to 29 days)           |
+| `--currency`             | USD                                        | Must be in auction-service's `SUPPORTED_CURRENCY_CODES`           |
+| `--partitions`           | 0 (ask the brokers)                        | Partitions of `--topic`, used to compute each auction's partition |
+| `--brokers`, `--topic`   | `KAFKA_BROKERS`, `AUCTION_EVENTS_TOPIC`    | Where `--partitions 0` looks the count up                         |
+| `--out`                  | `tools/loadgen/out/manifest.json`          | Manifest path (compact JSON; read it with `jq`)                   |
+| `--database-url`         | `DATABASE_URL`, the Compose database       | PostgreSQL                                                        |
+| `--api-url`              | `AUCTION_API_URL`, `http://localhost:3002` | auction-service                                                   |
+| `--key`, `--jwks`        | `services/identity-service/.local-keys/…`  | Signing material from `pnpm auth:keys:local`                      |
+| `--issuer`, `--audience` | `AUTH_ISSUER`, `AUTH_AUDIENCE`             | Must match auction-service's `AUTH_ISSUER` and `AUTH_AUDIENCE`    |
+| `--ttl`                  | 5m                                         | At most auction-service's `ACCESS_TOKEN_TTL_SECONDS`              |
 
 Decisions worth knowing:
 
@@ -66,7 +67,8 @@ Decisions worth knowing:
   does not leave later auctions with an almost-passed deadline. The finalizer
   closes auctions after `ends_at`, hence the 7-day default for load runs.
 - **Partitions are predicted, not chosen.** Auction ids are database-generated, so
-  the tool cannot place an auction on a partition. It computes the partition
+  the tool cannot place an auction on a partition. It reads the partition count
+  from the topic, so the manifest cannot disagree with it, computes the partition
   (Kafka's murmur2 of the decimal id) and records it. To get N auctions on one
   partition, seed about `partitions × N` and use those that map to it.
 
@@ -108,8 +110,12 @@ How to read it:
 - The sampler never counts the `bids` table, which at hundreds of millions of
   rows would be the load it is watching. Bid and order totals come from sequences,
   which is O(1). The outbox count reads a partial index holding only unpublished
-  rows, so its cost grows with the backlog it reports; every query runs under a
-  2 s `statement_timeout`.
+  rows, so its cost grows with the backlog it reports. The database reading is one
+  statement, so it costs one round trip.
+- A tick waits at most `--read-timeout` (5 s by default) for PostgreSQL and Kafka,
+  which is independent of `--interval`; the database's `statement_timeout` is set
+  to the same value. A read that times out leaves a gap, and a slow tick delays the
+  next one instead of overlapping it.
 - A group that has never committed on the topic (or does not exist) has empty
   lag cells, not zero. In a group that has committed somewhere, a partition with
   no commit counts its whole contents as lag, which assumes the group starts at
@@ -122,19 +128,10 @@ How to read it:
 
 ## Checks
 
-| Command                               | What it does                                                                                                     | Needs Docker |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------ |
-| `pnpm loadgen:check`                  | `gofmt` (fails on unformatted files), `go vet`, vet of the integration tests, unit tests with `-race`            | No           |
-| `pnpm loadgen:test:integration`       | Tests tagged `integration` against real PostgreSQL and Kafka; needs `TEST_DATABASE_URL` and `TEST_KAFKA_BROKERS` | Yes          |
-| `pnpm loadgen:test:integration:local` | The same with the Compose endpoints from `scripts/local-test.env`                                                | Yes          |
-
-Integration files carry `//go:build integration`, and the tagged run also
-includes the unit tests of those packages. Like the other tiers, a missing
-`TEST_*` variable fails the run instead of skipping it. CI runs both commands.
-`pnpm check` is unchanged and does not need Go.
-
-The integration tests use throwaway databases built from `db/schema.sql` and
-throwaway topics, and remove them afterwards.
+`pnpm loadgen:check` is the hermetic gate and `pnpm loadgen:test:integration:local`
+runs the tests that need the Compose stack; both run in CI. The commands, the
+`integration` build tag and the rule that a missing `TEST_*` variable fails the
+run are in [`docs/TESTING.md`](../../docs/TESTING.md#the-go-load-tool).
 
 ## Verification record
 

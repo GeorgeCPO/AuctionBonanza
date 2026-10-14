@@ -9,14 +9,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"time"
 )
@@ -24,6 +22,9 @@ import (
 const (
 	tokenType      = "at+jwt"
 	coordinateSize = 32
+	// DefaultTTL is a token lifetime that fits auction-service's default
+	// ACCESS_TOKEN_TTL_SECONDS (600), which rejects any longer token.
+	DefaultTTL = 5 * time.Minute
 )
 
 // Minter signs access tokens with one private key. It holds no mutable state,
@@ -33,6 +34,7 @@ type Minter struct {
 	keyID    string
 	issuer   string
 	audience string
+	ttl      time.Duration
 }
 
 // Claims is the payload of an access token.
@@ -58,24 +60,24 @@ type jwks struct {
 	} `json:"keys"`
 }
 
-type signature struct {
-	R, S *big.Int
-}
-
-// New builds a Minter from an ECDSA P-256 key.
-func New(key *ecdsa.PrivateKey, keyID, issuer, audience string) (*Minter, error) {
+// New builds a Minter from an ECDSA P-256 key. Every token it mints lives for
+// ttl, which auction-service only accepts up to its ACCESS_TOKEN_TTL_SECONDS.
+func New(key *ecdsa.PrivateKey, keyID, issuer, audience string, ttl time.Duration) (*Minter, error) {
 	if key.Curve != elliptic.P256() {
 		return nil, errors.New("signing key must be on curve P-256")
 	}
 	if keyID == "" || issuer == "" || audience == "" {
 		return nil, errors.New("key id, issuer and audience are required")
 	}
-	return &Minter{key: key, keyID: keyID, issuer: issuer, audience: audience}, nil
+	if ttl <= 0 {
+		return nil, errors.New("token lifetime must be positive")
+	}
+	return &Minter{key: key, keyID: keyID, issuer: issuer, audience: audience, ttl: ttl}, nil
 }
 
 // Load reads the local signing material that `pnpm auth:keys:local` writes: a
 // PKCS#8 PEM private key and the JWKS holding the key id identity publishes.
-func Load(privateKeyPath, jwksPath, issuer, audience string) (*Minter, error) {
+func Load(privateKeyPath, jwksPath, issuer, audience string, ttl time.Duration) (*Minter, error) {
 	pemBytes, err := os.ReadFile(privateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read signing key: %w", err)
@@ -106,12 +108,12 @@ func Load(privateKeyPath, jwksPath, issuer, audience string) (*Minter, error) {
 		return nil, fmt.Errorf("jwks %s has no keys", jwksPath)
 	}
 
-	return New(key, set.Keys[0].KeyID, issuer, audience)
+	return New(key, set.Keys[0].KeyID, issuer, audience, ttl)
 }
 
-// Mint returns a signed access token for a user. The token must not outlive
-// the verifier's ACCESS_TOKEN_TTL_SECONDS, which is also its issuance limit.
-func (m *Minter) Mint(userID string, now time.Time, ttl time.Duration) (string, error) {
+// Mint returns a signed access token for a user, valid from now for the
+// Minter's lifetime.
+func (m *Minter) Mint(userID string, now time.Time) (string, error) {
 	sessionID, err := randomID()
 	if err != nil {
 		return "", err
@@ -128,22 +130,23 @@ func (m *Minter) Mint(userID string, now time.Time, ttl time.Duration) (string, 
 		SessionID: sessionID,
 		TokenID:   tokenID,
 		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(ttl).Unix(),
+		ExpiresAt: now.Add(m.ttl).Unix(),
 	}
 	signingInput, err := encodeSigningInput(header{Algorithm: "ES256", Type: tokenType, KeyID: m.keyID}, claims)
 	if err != nil {
 		return "", err
 	}
 
+	// JWS wants the signature as r||s, each 32 bytes, which is what Sign returns
+	// before ASN.1 encoding would hide it.
 	digest := sha256.Sum256([]byte(signingInput))
-	der, err := ecdsa.SignASN1(rand.Reader, m.key, digest[:])
+	r, s, err := ecdsa.Sign(rand.Reader, m.key, digest[:])
 	if err != nil {
 		return "", fmt.Errorf("sign token: %w", err)
 	}
-	raw, err := toFixedWidth(der)
-	if err != nil {
-		return "", err
-	}
+	raw := make([]byte, 2*coordinateSize)
+	r.FillBytes(raw[:coordinateSize])
+	s.FillBytes(raw[coordinateSize:])
 
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(raw), nil
 }
@@ -159,23 +162,6 @@ func encodeSigningInput(h header, c Claims) (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
 		base64.RawURLEncoding.EncodeToString(claimsJSON), nil
-}
-
-// toFixedWidth converts Go's DER signature to the r||s form JWS requires.
-func toFixedWidth(der []byte) ([]byte, error) {
-	var parsed signature
-	rest, err := asn1.Unmarshal(der, &parsed)
-	if err != nil {
-		return nil, fmt.Errorf("decode signature: %w", err)
-	}
-	if len(rest) != 0 {
-		return nil, errors.New("trailing data after signature")
-	}
-
-	raw := make([]byte, 2*coordinateSize)
-	parsed.R.FillBytes(raw[:coordinateSize])
-	parsed.S.FillBytes(raw[coordinateSize:])
-	return raw, nil
 }
 
 func randomID() (string, error) {

@@ -280,15 +280,6 @@ auction that does not exist), then `bid-accepted` events; see
 ## Load tool
 
 `tools/loadgen` is a Go tool for the scale scenarios in
-[`ACCEPTANCE.md`](ACCEPTANCE.md). It seeds users and auctions and samples
-PostgreSQL and Kafka into CSV while a stack runs. It needs Go (the version is in
-`tools/loadgen/go.mod`) only if you use it; `pnpm check` does not.
-
-```sh
-pnpm loadgen:build
-tools/loadgen/bin/loadgen seed --users 100 --auctions 1000
-tools/loadgen/bin/loadgen sample --duration 60s
-```
-
-Usage, the CSV columns and what they mean are in
+[`ACCEPTANCE.md`](ACCEPTANCE.md): it seeds users and auctions and samples
+PostgreSQL and Kafka into CSV while a stack runs. Usage and the CSV columns are in
 [`tools/loadgen/README.md`](tools/loadgen/README.md).

@@ -2,8 +2,6 @@ package testinfra
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,18 +13,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewDatabase creates a throwaway database from db/schema.sql, returns a pool
-// on it, and drops it when the test ends. The database user needs CREATEDB.
-func NewDatabase(t testing.TB, adminURL string) *pgxpool.Pool {
+// NewDatabase creates a throwaway database from db/schema.sql on the server
+// TEST_DATABASE_URL names, returns a pool on it, and drops it when the test
+// ends. The database user needs CREATEDB. Call RequireEnvironment from TestMain
+// first.
+func NewDatabase(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
 
-	suffix := make([]byte, 6)
-	_, err := rand.Read(suffix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := "loadgen_test_" + hex.EncodeToString(suffix)
+	adminURL := os.Getenv("TEST_DATABASE_URL")
+	name := uniqueName(t, "loadgen_test_")
 
 	admin, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
