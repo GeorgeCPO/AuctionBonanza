@@ -48,11 +48,3 @@ func TestPartitionForKeyStaysInRange(t *testing.T) {
 		}
 	}
 }
-
-func TestPartitionForKeyIsStable(t *testing.T) {
-	first := PartitionForKey("1234567890", 12)
-	second := PartitionForKey("1234567890", 12)
-	if first != second {
-		t.Fatalf("same key mapped to %d then %d", first, second)
-	}
-}

@@ -2,6 +2,7 @@ package sample
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -21,10 +22,14 @@ type Recorder interface {
 	Record(o Observation) error
 }
 
-// SamplerOptions tune a Sampler.
+// SamplerOptions tune a Sampler. Interval and ReadTimeout are required.
 type SamplerOptions struct {
+	// Interval is the time between ticks. A tick that overruns it delays the
+	// next one rather than overlapping it.
 	Interval time.Duration
-	// ReadTimeout bounds one collection. Default: the interval, at most 5 s.
+	// ReadTimeout bounds one tick's reads. It is independent of Interval and
+	// should be generous: a loaded system answers slowly exactly when the data
+	// matters most, and a timed-out read leaves a gap.
 	ReadTimeout time.Duration
 	// Now is the clock. Default time.Now.
 	Now    func() time.Time
@@ -46,12 +51,6 @@ type Sampler struct {
 }
 
 func NewSampler(postgres PostgresSource, kafka KafkaSource, recorder Recorder, options SamplerOptions) *Sampler {
-	if options.Interval <= 0 {
-		options.Interval = time.Second
-	}
-	if options.ReadTimeout <= 0 {
-		options.ReadTimeout = min(options.Interval, 5*time.Second)
-	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -71,6 +70,10 @@ func NewSampler(postgres PostgresSource, kafka KafkaSource, recorder Recorder, o
 // failed read is logged and leaves its cells empty; a failed write stops the
 // run, because data that cannot be recorded is not worth collecting.
 func (s *Sampler) Run(ctx context.Context) (Summary, error) {
+	if s.options.Interval <= 0 || s.options.ReadTimeout <= 0 {
+		return Summary{}, errors.New("interval and read timeout must be positive")
+	}
+
 	ticker := time.NewTicker(s.options.Interval)
 	defer ticker.Stop()
 
@@ -102,24 +105,25 @@ func (s *Sampler) tick(ctx context.Context) error {
 
 	observation := Observe(at, postgres, kafka, s.lastPostgres, s.lastKafka)
 	if postgres != nil {
-		s.lastPostgres = &Timed[PostgresSnapshot]{At: at, Value: *postgres}
+		s.lastPostgres = postgres
 	}
 	if kafka != nil {
-		s.lastKafka = &Timed[KafkaSnapshot]{At: at, Value: *kafka}
+		s.lastKafka = kafka
 	}
 
 	s.summary.Add(observation)
 	return s.recorder.Record(observation)
 }
 
-// collect reads both sources at the same time, so a slow one does not delay the
-// other's timestamp. A nil result means that source failed this tick.
-func (s *Sampler) collect(ctx context.Context) (*PostgresSnapshot, *KafkaSnapshot) {
+// collect reads both sources at the same time. Each reading is stamped when its
+// own read finishes, so a slow source does not skew the other's rates. A nil
+// result means that source failed this tick.
+func (s *Sampler) collect(ctx context.Context) (*Timed[PostgresSnapshot], *Timed[KafkaSnapshot]) {
 	readCtx, cancel := context.WithTimeout(ctx, s.options.ReadTimeout)
 	defer cancel()
 
-	var postgres *PostgresSnapshot
-	var kafka *KafkaSnapshot
+	var postgres *Timed[PostgresSnapshot]
+	var kafka *Timed[KafkaSnapshot]
 	var readers sync.WaitGroup
 	readers.Add(2)
 
@@ -130,7 +134,7 @@ func (s *Sampler) collect(ctx context.Context) (*PostgresSnapshot, *KafkaSnapsho
 			s.logFailure(ctx, "postgres", err)
 			return
 		}
-		postgres = &snapshot
+		postgres = &Timed[PostgresSnapshot]{At: s.options.Now(), Value: snapshot}
 	}()
 	go func() {
 		defer readers.Done()
@@ -139,7 +143,7 @@ func (s *Sampler) collect(ctx context.Context) (*PostgresSnapshot, *KafkaSnapsho
 			s.logFailure(ctx, "kafka", err)
 			return
 		}
-		kafka = &snapshot
+		kafka = &Timed[KafkaSnapshot]{At: s.options.Now(), Value: snapshot}
 	}()
 
 	readers.Wait()

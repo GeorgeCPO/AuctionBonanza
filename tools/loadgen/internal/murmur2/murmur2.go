@@ -4,6 +4,8 @@
 // auction's events land on.
 package murmur2
 
+import "encoding/binary"
+
 const (
 	seed = uint32(0x9747b28c)
 	m    = uint32(0x5bd1e995)
@@ -16,12 +18,8 @@ func Hash(data []byte) int32 {
 	h := seed ^ uint32(length)
 
 	blocks := length / 4
-	for i := 0; i < blocks; i++ {
-		offset := i * 4
-		k := uint32(data[offset]) |
-			uint32(data[offset+1])<<8 |
-			uint32(data[offset+2])<<16 |
-			uint32(data[offset+3])<<24
+	for i := range blocks {
+		k := binary.LittleEndian.Uint32(data[i*4:])
 		k *= m
 		k ^= k >> r
 		k *= m

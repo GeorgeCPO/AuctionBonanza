@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/GeorgeCPO/AuctionBonanza/tools/loadgen/internal/murmur2"
@@ -30,17 +29,16 @@ type AuctionCreator interface {
 
 // TokenSource mints an access token for a user.
 type TokenSource interface {
-	Mint(userID string, now time.Time, ttl time.Duration) (string, error)
+	Mint(userID string, now time.Time) (string, error)
 }
 
-// Options tune a Seeder. Zero values take the defaults noted per field.
+// Options tune a Seeder. Partitions and Concurrency are required; the rest have
+// defaults noted per field.
 type Options struct {
 	// Partitions of auction.events, used to compute each auction's partition.
 	Partitions int
-	// Concurrency is the number of requests in flight. Default 16.
+	// Concurrency is the number of requests in flight.
 	Concurrency int
-	// TokenTTL must not exceed auction-service's ACCESS_TOKEN_TTL_SECONDS. Default 5 minutes.
-	TokenTTL time.Duration
 	// Now is the clock. Default time.Now.
 	Now func() time.Time
 	// Backoff is how long to wait before send attempt n+1. Default 200 ms times n.
@@ -48,7 +46,22 @@ type Options struct {
 	Logger  *slog.Logger
 }
 
-// Seeder carries out a Plan against a running stack.
+// InterruptedError says a run stopped early. The manifest returned with it is
+// valid and lists what was created before the stop; any other error returns no
+// manifest.
+type InterruptedError struct {
+	Cause error
+}
+
+func (e *InterruptedError) Error() string {
+	return fmt.Sprintf("seeding interrupted: %v", e.Cause)
+}
+
+func (e *InterruptedError) Unwrap() error {
+	return e.Cause
+}
+
+// Seeder carries out a plan against a running stack.
 type Seeder struct {
 	users   UserEnsurer
 	creator AuctionCreator
@@ -57,12 +70,6 @@ type Seeder struct {
 }
 
 func NewSeeder(users UserEnsurer, creator AuctionCreator, tokens TokenSource, options Options) *Seeder {
-	if options.Concurrency <= 0 {
-		options.Concurrency = 16
-	}
-	if options.TokenTTL <= 0 {
-		options.TokenTTL = 5 * time.Minute
-	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -78,17 +85,21 @@ func NewSeeder(users UserEnsurer, creator AuctionCreator, tokens TokenSource, op
 }
 
 type outcome struct {
+	index   int
 	auction CreatedAuction
 	err     error
 }
 
-// Run creates the users and auctions the spec asks for. When the context ends
-// early it returns the manifest of what was created together with the error.
+// Run creates the users and auctions the spec asks for. Results are collected
+// as they arrive, so memory holds the plan and the manifest and nothing else.
 func (s *Seeder) Run(ctx context.Context, spec Spec) (Manifest, error) {
 	if s.options.Partitions <= 0 {
 		return Manifest{}, errors.New("partition count must be positive")
 	}
-	plan, err := BuildPlan(spec)
+	if s.options.Concurrency <= 0 {
+		return Manifest{}, errors.New("concurrency must be positive")
+	}
+	requests, err := BuildPlan(spec)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -97,40 +108,56 @@ func (s *Seeder) Run(ctx context.Context, spec Spec) (Manifest, error) {
 		return Manifest{}, err
 	}
 
-	outcomes := make([]outcome, len(plan.Auctions))
-	completed := make([]bool, len(plan.Auctions))
-	jobs := make(chan int)
-	var finished atomic.Int64
-	var workers sync.WaitGroup
+	manifest := Manifest{
+		CreatedAt:  s.options.Now().UTC(),
+		Partitions: s.options.Partitions,
+		Users:      users,
+		Auctions:   make([]ManifestAuction, 0, len(requests)),
+	}
 
+	jobs := make(chan int)
+	outcomes := make(chan outcome, s.options.Concurrency)
+	var workers sync.WaitGroup
 	for range s.options.Concurrency {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				outcomes[index] = s.create(ctx, users[plan.Auctions[index].OwnerIndex], plan.Auctions[index])
-				completed[index] = true
-				done := finished.Add(1)
-				if done%progressEvery == 0 {
-					s.options.Logger.Info("seeding", "created", done, "of", len(plan.Auctions))
-				}
+				result := s.create(ctx, users[requests[index].OwnerIndex], requests[index])
+				result.index = index
+				outcomes <- result
 			}
 		}()
 	}
+	go func() {
+		defer close(jobs)
+		for index := range requests {
+			select {
+			case jobs <- index:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		workers.Wait()
+		close(outcomes)
+	}()
 
-feed:
-	for index := range plan.Auctions {
-		select {
-		case jobs <- index:
-		case <-ctx.Done():
-			break feed
+	finished := 0
+	for result := range outcomes {
+		s.record(&manifest, result)
+		finished++
+		if finished%progressEvery == 0 {
+			s.options.Logger.Info("seeding", "finished", finished, "of", len(requests))
 		}
 	}
-	close(jobs)
-	workers.Wait()
 
-	manifest := s.buildManifest(users, outcomes, completed)
-	return manifest, ctx.Err()
+	stopped := ctx.Err()
+	if stopped != nil {
+		return manifest, &InterruptedError{Cause: stopped}
+	}
+	return manifest, nil
 }
 
 // create sends one auction. Only a failure to reach the server is retried:
@@ -139,7 +166,7 @@ feed:
 func (s *Seeder) create(ctx context.Context, owner User, request AuctionRequest) outcome {
 	for attempt := 1; ; attempt++ {
 		now := s.options.Now()
-		bearer, err := s.tokens.Mint(owner.ID, now, s.options.TokenTTL)
+		bearer, err := s.tokens.Mint(owner.ID, now)
 		if err != nil {
 			return outcome{err: err}
 		}
@@ -160,14 +187,29 @@ func (s *Seeder) create(ctx context.Context, owner User, request AuctionRequest)
 		if !retryable {
 			return outcome{err: err}
 		}
-		waitErr := s.wait(ctx, s.options.Backoff(attempt))
+		waitErr := wait(ctx, s.options.Backoff(attempt))
 		if waitErr != nil {
 			return outcome{err: waitErr}
 		}
 	}
 }
 
-func (s *Seeder) wait(ctx context.Context, delay time.Duration) error {
+func (s *Seeder) record(manifest *Manifest, result outcome) {
+	if result.err != nil {
+		manifest.Failed++
+		if len(manifest.FailureSamples) < maxFailureNotes {
+			manifest.FailureSamples = append(manifest.FailureSamples, fmt.Sprintf("auction %d: %v", result.index+1, result.err))
+		}
+		return
+	}
+
+	manifest.Auctions = append(manifest.Auctions, ManifestAuction{
+		CreatedAuction: result.auction,
+		Partition:      murmur2.PartitionForKey(result.auction.ID, s.options.Partitions),
+	})
+}
+
+func wait(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -176,40 +218,4 @@ func (s *Seeder) wait(ctx context.Context, delay time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func (s *Seeder) buildManifest(users []User, outcomes []outcome, completed []bool) Manifest {
-	manifest := Manifest{
-		CreatedAt:       s.options.Now().UTC(),
-		Partitions:      s.options.Partitions,
-		Users:           users,
-		Auctions:        make([]ManifestAuction, 0, len(outcomes)),
-		PartitionCounts: make([]int, s.options.Partitions),
-	}
-
-	for index, result := range outcomes {
-		if !completed[index] {
-			continue
-		}
-		if result.err != nil {
-			manifest.Failed++
-			if len(manifest.FailureSamples) < maxFailureNotes {
-				manifest.FailureSamples = append(manifest.FailureSamples, fmt.Sprintf("auction %d: %v", index+1, result.err))
-			}
-			continue
-		}
-
-		partition := murmur2.PartitionForKey(result.auction.ID, s.options.Partitions)
-		manifest.PartitionCounts[partition]++
-		manifest.Auctions = append(manifest.Auctions, ManifestAuction{
-			ID:                       result.auction.ID,
-			OwnerID:                  result.auction.OwnerID,
-			CurrencyCode:             result.auction.CurrencyCode,
-			EndsAt:                   result.auction.EndsAt,
-			StartingPriceMinor:       result.auction.StartingPriceMinor,
-			MinimumBidIncrementMinor: result.auction.MinimumBidIncrementMinor,
-			Partition:                partition,
-		})
-	}
-	return manifest
 }

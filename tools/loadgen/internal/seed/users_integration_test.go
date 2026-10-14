@@ -17,7 +17,7 @@ func TestMain(m *testing.M) {
 
 func TestEnsureUsersIsIdempotentAndGrows(t *testing.T) {
 	ctx := context.Background()
-	pool := testinfra.NewDatabase(t, os.Getenv("TEST_DATABASE_URL"))
+	pool := testinfra.NewDatabase(t)
 	store := NewPostgresUserStore(pool)
 
 	first, err := store.EnsureUsers(ctx, 5)
@@ -56,7 +56,7 @@ func TestEnsureUsersIsIdempotentAndGrows(t *testing.T) {
 
 func TestEnsureUsersReusesAnAccountWithDifferentEmailCase(t *testing.T) {
 	ctx := context.Background()
-	pool := testinfra.NewDatabase(t, os.Getenv("TEST_DATABASE_URL"))
+	pool := testinfra.NewDatabase(t)
 	_, err := pool.Exec(ctx,
 		`INSERT INTO users (username, password_hash, email) VALUES ('someone', 'x', 'LoadGen-2@loadgen.invalid')`)
 	if err != nil {
@@ -82,7 +82,7 @@ func TestEnsureUsersReusesAnAccountWithDifferentEmailCase(t *testing.T) {
 
 func TestSeededUsersCannotLogIn(t *testing.T) {
 	ctx := context.Background()
-	pool := testinfra.NewDatabase(t, os.Getenv("TEST_DATABASE_URL"))
+	pool := testinfra.NewDatabase(t)
 	_, err := NewPostgresUserStore(pool).EnsureUsers(ctx, 2)
 	if err != nil {
 		t.Fatal(err)

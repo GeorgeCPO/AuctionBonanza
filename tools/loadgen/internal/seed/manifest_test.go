@@ -15,7 +15,7 @@ func TestWriteManifestRoundTripsAndLeavesNoTemporaryFile(t *testing.T) {
 		CreatedAt:  time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
 		Partitions: 12,
 		Users:      []User{{ID: "1", Email: "loadgen-1@loadgen.invalid"}},
-		Auctions:   []ManifestAuction{{ID: "9", OwnerID: "1", Partition: 3}},
+		Auctions:   []ManifestAuction{{CreatedAuction: CreatedAuction{ID: "9", OwnerID: "1"}, Partition: 3}},
 	}
 
 	err := WriteManifest(path, manifest)
@@ -42,6 +42,35 @@ func TestWriteManifestRoundTripsAndLeavesNoTemporaryFile(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("directory holds %d entries, want only the manifest", len(entries))
+	}
+}
+
+func TestManifestFlattensAuctionFieldsNextToPartition(t *testing.T) {
+	encoded, err := json.Marshal(ManifestAuction{CreatedAuction: CreatedAuction{ID: "9", OwnerID: "1"}, Partition: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var fields map[string]any
+	err = json.Unmarshal(encoded, &fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields["id"] != "9" || fields["ownerId"] != "1" || fields["partition"] != float64(3) {
+		t.Errorf("manifest auction is not flat: %s", encoded)
+	}
+}
+
+func TestPartitionCountsAddUpToTheAuctions(t *testing.T) {
+	manifest := Manifest{Partitions: 4, Auctions: []ManifestAuction{{Partition: 0}, {Partition: 3}, {Partition: 3}, {Partition: 3}}}
+
+	counts := manifest.PartitionCounts()
+
+	want := []int{1, 0, 0, 3}
+	for partition := range want {
+		if counts[partition] != want[partition] {
+			t.Fatalf("counts %v, want %v", counts, want)
+		}
 	}
 }
 

@@ -23,7 +23,7 @@ func NewCSVRecorder(samples, partitions io.Writer, groups []string) (*CSVRecorde
 	recorder := &CSVRecorder{
 		samples:    csv.NewWriter(samples),
 		partitions: csv.NewWriter(partitions),
-		groups:     append([]string(nil), groups...),
+		groups:     groups,
 	}
 
 	samplesHeader := []string{
@@ -84,7 +84,7 @@ func (r *CSVRecorder) samplesRow(at string, o Observation) []string {
 	row = append(row, optional(o.EventRate))
 
 	for _, group := range r.groups {
-		row = append(row, r.groupLag(o, group))
+		row = append(row, groupLag(o, group))
 	}
 	return row
 }
@@ -117,7 +117,7 @@ func (r *CSVRecorder) partitionRow(at string, o Observation, partition Partition
 	return row
 }
 
-func (r *CSVRecorder) groupLag(o Observation, group string) string {
+func groupLag(o Observation, group string) string {
 	if o.Kafka == nil {
 		return ""
 	}

@@ -1,9 +1,10 @@
 package sample
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 )
@@ -18,11 +19,15 @@ type KafkaCollector struct {
 }
 
 func NewKafkaCollector(admin *kadm.Client, topic string, groups []string) *KafkaCollector {
-	return &KafkaCollector{admin: admin, topic: topic, groups: append([]string(nil), groups...)}
+	return &KafkaCollector{admin: admin, topic: topic, groups: groups}
 }
 
 func (c *KafkaCollector) Collect(ctx context.Context) (KafkaSnapshot, error) {
 	starts, err := c.admin.ListStartOffsets(ctx, c.topic)
+	if err != nil {
+		return KafkaSnapshot{}, fmt.Errorf("list start offsets: %w", err)
+	}
+	err = starts.Error()
 	if err != nil {
 		return KafkaSnapshot{}, fmt.Errorf("list start offsets: %w", err)
 	}
@@ -49,35 +54,44 @@ func (c *KafkaCollector) Collect(ctx context.Context) (KafkaSnapshot, error) {
 			Groups:      map[string]GroupProgress{},
 		})
 	}
-	sort.Slice(partitions, func(a, b int) bool { return partitions[a].Partition < partitions[b].Partition })
+	slices.SortFunc(partitions, func(a, b PartitionSnapshot) int {
+		return cmp.Compare(a.Partition, b.Partition)
+	})
 
 	snapshot := KafkaSnapshot{Partitions: partitions, GroupLag: map[string]int64{}}
+	if len(c.groups) == 0 {
+		return snapshot, nil
+	}
+
+	// One request for all groups, not one per group.
+	fetched := c.admin.FetchManyOffsets(ctx, c.groups...)
 	for _, group := range c.groups {
-		err = c.addGroup(ctx, &snapshot, group)
-		if err != nil {
-			return KafkaSnapshot{}, err
+		response := fetched[group]
+		if response.Err != nil {
+			return KafkaSnapshot{}, fmt.Errorf("fetch offsets of group %s: %w", group, response.Err)
 		}
+		addGroup(&snapshot, group, committedOffsets(response, c.topic))
 	}
 	return snapshot, nil
+}
+
+// committedOffsets are a group's valid commits on the topic.
+func committedOffsets(response kadm.FetchOffsetsResponse, topic string) map[int32]int64 {
+	committed := map[int32]int64{}
+	for _, offset := range response.Fetched[topic] {
+		if offset.Err == nil && offset.At >= 0 {
+			committed[offset.Partition] = offset.At
+		}
+	}
+	return committed
 }
 
 // addGroup records a group's progress if it has committed anything on the
 // topic. A group that does not exist, or has never committed, is left out
 // entirely, so it appears as unknown rather than as zero lag.
-func (c *KafkaCollector) addGroup(ctx context.Context, snapshot *KafkaSnapshot, group string) error {
-	responses, err := c.admin.FetchOffsets(ctx, group)
-	if err != nil {
-		return fmt.Errorf("fetch offsets of group %s: %w", group, err)
-	}
-
-	committed := map[int32]int64{}
-	for _, response := range responses[c.topic] {
-		if response.Err == nil && response.At >= 0 {
-			committed[response.Partition] = response.At
-		}
-	}
+func addGroup(snapshot *KafkaSnapshot, group string, committed map[int32]int64) {
 	if len(committed) == 0 {
-		return nil
+		return
 	}
 
 	var total int64
@@ -95,5 +109,4 @@ func (c *KafkaCollector) addGroup(ctx context.Context, snapshot *KafkaSnapshot, 
 		total += progress.Lag
 	}
 	snapshot.GroupLag[group] = total
-	return nil
 }

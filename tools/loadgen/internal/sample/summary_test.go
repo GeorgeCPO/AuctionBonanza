@@ -22,11 +22,10 @@ func TestSummaryReportsPeaksTotalsAndTheHottestPartition(t *testing.T) {
 			Kafka:    &KafkaSnapshot{Partitions: []PartitionSnapshot{{Partition: 0, EndOffset: 0}, {Partition: 1, EndOffset: 0}}, GroupLag: map[string]int64{"relay": 0}},
 		},
 		Observation{
-			At:        epoch.Add(time.Second),
-			Postgres:  &PostgresSnapshot{BidsIssued: 500, OrdersIssued: 2, OutboxUnpublished: 90, OutboxOldestAgeSeconds: 4.5, OutboxRetrying: 3, LockWaiters: 7, IdleInTransaction: 2},
-			BidRate:   ptr(500),
-			Kafka:     &KafkaSnapshot{Partitions: []PartitionSnapshot{{Partition: 0, EndOffset: 100}, {Partition: 1, EndOffset: 300}}, GroupLag: map[string]int64{"relay": 250}},
-			EventRate: ptr(400),
+			At:       epoch.Add(time.Second),
+			Postgres: &PostgresSnapshot{BidsIssued: 500, OrdersIssued: 2, OutboxUnpublished: 90, OutboxOldestAgeSeconds: 4.5, OutboxRetrying: 3, LockWaiters: 7, IdleInTransaction: 2},
+			BidRate:  ptr(500),
+			Kafka:    &KafkaSnapshot{Partitions: []PartitionSnapshot{{Partition: 0, EndOffset: 100}, {Partition: 1, EndOffset: 300}}, GroupLag: map[string]int64{"relay": 250}},
 		},
 		Observation{
 			At:       epoch.Add(2 * time.Second),

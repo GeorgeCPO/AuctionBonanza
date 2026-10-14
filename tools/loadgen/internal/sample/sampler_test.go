@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -44,31 +45,30 @@ func (f fixedKafka) Collect(context.Context) (KafkaSnapshot, error) {
 
 type collectingRecorder struct {
 	observations []Observation
+	recorded     atomic.Int64
 	failAfter    int
 }
 
 func (c *collectingRecorder) Record(o Observation) error {
 	c.observations = append(c.observations, o)
+	c.recorded.Add(1)
 	if c.failAfter > 0 && len(c.observations) >= c.failAfter {
 		return errors.New("disk full")
 	}
 	return nil
 }
 
-// steppingClock advances one second per reading, so a rate equals the delta.
-func steppingClock() func() time.Time {
-	var mu sync.Mutex
-	current := epoch
+// tickClock reads one second later after every recorded tick and the same
+// within a tick, so a rate equals the counter's change per tick however many
+// times the sampler asks for the time.
+func tickClock(recorder *collectingRecorder) func() time.Time {
 	return func() time.Time {
-		mu.Lock()
-		defer mu.Unlock()
-		current = current.Add(time.Second)
-		return current
+		return epoch.Add(time.Duration(recorder.recorded.Load()+1) * time.Second)
 	}
 }
 
-func options(clock func() time.Time) SamplerOptions {
-	return SamplerOptions{Interval: time.Millisecond, Now: clock}
+func options(recorder *collectingRecorder) SamplerOptions {
+	return SamplerOptions{Interval: time.Millisecond, ReadTimeout: time.Second, Now: tickClock(recorder)}
 }
 
 func TestSamplerRecordsATickPerReadingAndDerivesRates(t *testing.T) {
@@ -80,7 +80,7 @@ func TestSamplerRecordsATickPerReadingAndDerivesRates(t *testing.T) {
 		}
 	}}
 	recorder := &collectingRecorder{}
-	sampler := NewSampler(postgres, fixedKafka{}, recorder, options(steppingClock()))
+	sampler := NewSampler(postgres, fixedKafka{}, recorder, options(recorder))
 
 	summary, err := sampler.Run(ctx)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestSamplerKeepsGoingWhenASourceFailsAndRatesSpanTheGap(t *testing.T) {
 		}
 	}}
 	recorder := &collectingRecorder{}
-	sampler := NewSampler(postgres, fixedKafka{}, recorder, options(steppingClock()))
+	sampler := NewSampler(postgres, fixedKafka{}, recorder, options(recorder))
 
 	summary, err := sampler.Run(ctx)
 	if err != nil {
@@ -134,7 +134,7 @@ func TestSamplerKeepsGoingWhenASourceFailsAndRatesSpanTheGap(t *testing.T) {
 
 func TestSamplerStopsWhenTheRecorderFails(t *testing.T) {
 	recorder := &collectingRecorder{failAfter: 2}
-	sampler := NewSampler(&scriptedPostgres{perCall: 1}, fixedKafka{}, recorder, options(steppingClock()))
+	sampler := NewSampler(&scriptedPostgres{perCall: 1}, fixedKafka{}, recorder, options(recorder))
 
 	summary, err := sampler.Run(context.Background())
 
@@ -150,11 +150,29 @@ func TestSamplerReturnsImmediatelyForAnEndedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	recorder := &collectingRecorder{}
-	sampler := NewSampler(&scriptedPostgres{}, fixedKafka{}, recorder, options(steppingClock()))
+	sampler := NewSampler(&scriptedPostgres{}, fixedKafka{}, recorder, options(recorder))
 
 	summary, err := sampler.Run(ctx)
 
 	if err != nil || summary.Ticks != 0 || len(recorder.observations) != 0 {
 		t.Fatalf("an ended context still sampled: err=%v ticks=%d", err, summary.Ticks)
+	}
+}
+
+func TestSamplerRejectsMissingTimings(t *testing.T) {
+	recorder := &collectingRecorder{}
+	cases := map[string]SamplerOptions{
+		"no interval":     {ReadTimeout: time.Second},
+		"no read timeout": {Interval: time.Second},
+	}
+
+	for name, timings := range cases {
+		sampler := NewSampler(&scriptedPostgres{}, fixedKafka{}, recorder, timings)
+
+		_, err := sampler.Run(context.Background())
+
+		if err == nil || len(recorder.observations) != 0 {
+			t.Errorf("%s: ran anyway (err %v); a zero interval would panic the ticker", name, err)
+		}
 	}
 }

@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	minDuration = 2 * time.Minute
-	// The API caps an auction at 30 days; the margin absorbs the time between
-	// computing the end and the server receiving the request.
-	maxDuration = 29 * 24 * time.Hour
+	// MinDuration and MaxDuration bound an auction's length. The API accepts 1
+	// minute to 30 days; the margins absorb the time between computing the end
+	// and the server receiving the request.
+	MinDuration = 2 * time.Minute
+	MaxDuration = 29 * 24 * time.Hour
 )
 
 // Spec says how much to seed.
@@ -36,28 +37,23 @@ type AuctionRequest struct {
 	MinimumBidIncrementMinor string
 }
 
-// Plan lists everything a run will create. It is data: BuildPlan decides, the
-// Seeder performs it.
-type Plan struct {
-	Auctions []AuctionRequest
-}
-
-// BuildPlan expands a spec into concrete auction requests. Prices follow the
-// index so two runs of one spec produce the same plan. Owners rotate through
-// the users so every user owns auctions and, with at least two users, has
-// auctions it may bid on.
-func BuildPlan(spec Spec) (Plan, error) {
+// BuildPlan expands a spec into the auction requests a run will send. It is
+// data: BuildPlan decides, the Seeder performs it. Prices follow the index so
+// two runs of one spec produce the same plan. Owners rotate through the users so
+// every user owns auctions and, with at least two users, has auctions it may
+// bid on.
+func BuildPlan(spec Spec) ([]AuctionRequest, error) {
 	if spec.Users < 2 {
-		return Plan{}, errors.New("at least 2 users are needed so bidders differ from owners")
+		return nil, errors.New("at least 2 users are needed so bidders differ from owners")
 	}
 	if spec.Auctions < 0 {
-		return Plan{}, errors.New("auction count cannot be negative")
+		return nil, errors.New("auction count cannot be negative")
 	}
-	if spec.AuctionDuration < minDuration || spec.AuctionDuration > maxDuration {
-		return Plan{}, fmt.Errorf("auction duration must be between %s and %s", minDuration, maxDuration)
+	if spec.AuctionDuration < MinDuration || spec.AuctionDuration > MaxDuration {
+		return nil, fmt.Errorf("auction duration must be between %s and %s", MinDuration, MaxDuration)
 	}
 	if len(spec.CurrencyCode) != 3 {
-		return Plan{}, errors.New("currency code must have 3 letters")
+		return nil, errors.New("currency code must have 3 letters")
 	}
 
 	auctions := make([]AuctionRequest, spec.Auctions)
@@ -72,5 +68,5 @@ func BuildPlan(spec Spec) (Plan, error) {
 			MinimumBidIncrementMinor: "100",
 		}
 	}
-	return Plan{Auctions: auctions}, nil
+	return auctions, nil
 }

@@ -1,6 +1,7 @@
 package seed
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,36 +12,36 @@ import (
 // ManifestAuction is one auction that exists, with the Kafka partition its
 // events will use so a scenario can choose auctions by partition.
 type ManifestAuction struct {
-	ID                       string `json:"id"`
-	OwnerID                  string `json:"ownerId"`
-	CurrencyCode             string `json:"currencyCode"`
-	EndsAt                   string `json:"endsAt"`
-	StartingPriceMinor       string `json:"startingPriceMinor"`
-	MinimumBidIncrementMinor string `json:"minimumBidIncrementMinor"`
-	Partition                int    `json:"partition"`
+	CreatedAuction
+	Partition int `json:"partition"`
 }
 
 // Manifest is what a seeding run leaves behind for the stages that follow it.
 type Manifest struct {
-	CreatedAt       time.Time         `json:"createdAt"`
-	Partitions      int               `json:"partitions"`
-	Users           []User            `json:"users"`
-	Auctions        []ManifestAuction `json:"auctions"`
-	Failed          int               `json:"failed"`
-	FailureSamples  []string          `json:"failureSamples,omitempty"`
-	PartitionCounts []int             `json:"partitionCounts"`
+	CreatedAt      time.Time         `json:"createdAt"`
+	Partitions     int               `json:"partitions"`
+	Users          []User            `json:"users"`
+	Auctions       []ManifestAuction `json:"auctions"`
+	Failed         int               `json:"failed"`
+	FailureSamples []string          `json:"failureSamples,omitempty"`
 }
 
-// WriteManifest writes the manifest to a temporary file and renames it, so a
-// reader never sees a half-written file.
-func WriteManifest(path string, manifest Manifest) error {
-	encoded, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return err
+// PartitionCounts is how many of the auctions map to each partition.
+func (m Manifest) PartitionCounts() []int {
+	counts := make([]int, m.Partitions)
+	for _, auction := range m.Auctions {
+		counts[auction.Partition]++
 	}
+	return counts
+}
 
+// WriteManifest streams the manifest to a temporary file and renames it, so a
+// reader never sees a half-written file and a manifest of a million auctions is
+// never held a second time as one encoded buffer. The encoding is compact; pipe
+// it through jq to read it.
+func WriteManifest(path string, manifest Manifest) error {
 	directory := filepath.Dir(path)
-	err = os.MkdirAll(directory, 0o755)
+	err := os.MkdirAll(directory, 0o755)
 	if err != nil {
 		return fmt.Errorf("create manifest directory: %w", err)
 	}
@@ -50,7 +51,11 @@ func WriteManifest(path string, manifest Manifest) error {
 	}
 	defer os.Remove(temporary.Name())
 
-	_, err = temporary.Write(append(encoded, '\n'))
+	buffered := bufio.NewWriter(temporary)
+	err = json.NewEncoder(buffered).Encode(manifest)
+	if err == nil {
+		err = buffered.Flush()
+	}
 	if err != nil {
 		temporary.Close()
 		return fmt.Errorf("write manifest: %w", err)
