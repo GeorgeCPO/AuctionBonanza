@@ -9,14 +9,22 @@ import "time"
 // sequences are ids issued, so they also count ids burned by transactions that
 // rolled back; that makes them an upper bound on accepted bids, not a count.
 type PostgresSnapshot struct {
-	BidsIssued             int64
-	OrdersIssued           int64
+	BidsIssued   int64
+	OrdersIssued int64
+	// OutboxUnpublished saturates at the collector's cap, so a value equal to it
+	// means "at least that many".
 	OutboxUnpublished      int64
 	OutboxOldestAgeSeconds float64
 	OutboxRetrying         int64
 	LockWaiters            int64
 	IdleInTransaction      int64
 	Active                 int64
+
+	// OutboxUnavailable is why the outbox fields could not be read, or empty when
+	// they are valid. The outbox read is the one that grows with the backlog, so
+	// it is the one most likely to time out, and it must not take the rest of
+	// the snapshot with it.
+	OutboxUnavailable string
 }
 
 // GroupProgress is one consumer group's position in one partition.

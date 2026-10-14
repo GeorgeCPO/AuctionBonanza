@@ -105,3 +105,25 @@ func TestSummaryWriteMentionsTheKeyNumbers(t *testing.T) {
 		}
 	}
 }
+
+func TestSummaryIgnoresTheOutboxOfTicksWhereItCouldNotBeRead(t *testing.T) {
+	builder := NewSummaryBuilder()
+	feed(builder,
+		Observation{At: epoch, Postgres: &PostgresSnapshot{OutboxUnpublished: 40, LockWaiters: 2}},
+		Observation{At: epoch.Add(time.Second), Postgres: &PostgresSnapshot{OutboxUnavailable: "timeout", LockWaiters: 9}},
+	)
+
+	summary := builder.Build()
+
+	if summary.OutboxFailures != 1 || summary.PeakOutboxUnpublished != 40 {
+		t.Errorf("outbox failures %d, peak %d, want 1 and 40", summary.OutboxFailures, summary.PeakOutboxUnpublished)
+	}
+	if summary.PeakLockWaiters != 9 {
+		t.Errorf("peak lock waiters %d, want 9: only the outbox is missing on that tick", summary.PeakLockWaiters)
+	}
+	var out bytes.Buffer
+	summary.Write(&out)
+	if !strings.Contains(out.String(), "outbox could not be read on 1 ticks") {
+		t.Errorf("the summary does not warn that its outbox peaks may be too low:\n%s", out.String())
+	}
+}

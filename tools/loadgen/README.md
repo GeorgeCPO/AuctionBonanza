@@ -34,21 +34,22 @@ JWKS to verify tokens).
 tools/loadgen/bin/loadgen seed --users 100 --auctions 1000
 ```
 
-| Flag                     | Default                                    | Meaning                                                           |
-| ------------------------ | ------------------------------------------ | ----------------------------------------------------------------- |
-| `--users`                | 100                                        | Seeded users, at least 2 so bidders can differ from owners        |
-| `--auctions`             | 1000                                       | Auctions to create; owners rotate through the users               |
-| `--concurrency`          | 16                                         | Requests in flight                                                |
-| `--duration`             | 168h                                       | How long each auction stays open (2 minutes to 29 days)           |
-| `--currency`             | USD                                        | Must be in auction-service's `SUPPORTED_CURRENCY_CODES`           |
-| `--partitions`           | 0 (ask the brokers)                        | Partitions of `--topic`, used to compute each auction's partition |
-| `--brokers`, `--topic`   | `KAFKA_BROKERS`, `AUCTION_EVENTS_TOPIC`    | Where `--partitions 0` looks the count up                         |
-| `--out`                  | `tools/loadgen/out/manifest.json`          | Manifest path (compact JSON; read it with `jq`)                   |
-| `--database-url`         | `DATABASE_URL`, the Compose database       | PostgreSQL                                                        |
-| `--api-url`              | `AUCTION_API_URL`, `http://localhost:3002` | auction-service                                                   |
-| `--key`, `--jwks`        | `services/identity-service/.local-keys/…`  | Signing material from `pnpm auth:keys:local`                      |
-| `--issuer`, `--audience` | `AUTH_ISSUER`, `AUTH_AUDIENCE`             | Must match auction-service's `AUTH_ISSUER` and `AUTH_AUDIENCE`    |
-| `--ttl`                  | 5m                                         | At most auction-service's `ACCESS_TOKEN_TTL_SECONDS`              |
+| Flag                     | Default                                    | Meaning                                                                                                                       |
+| ------------------------ | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `--users`                | 100                                        | Seeded users, at least 2 so bidders can differ from owners                                                                    |
+| `--auctions`             | 1000                                       | Auctions to create; owners rotate through the users                                                                           |
+| `--concurrency`          | 16                                         | Requests in flight                                                                                                            |
+| `--abort-after`          | 10                                         | Stop after this many failures in a row; 0 never stops                                                                         |
+| `--duration`             | 168h                                       | How long each auction stays open (2 minutes to 29 days)                                                                       |
+| `--currency`             | USD                                        | Must be in auction-service's `SUPPORTED_CURRENCY_CODES`                                                                       |
+| `--partitions`           | 0 (ask the brokers)                        | Partitions of `--topic`, used to compute each auction's partition                                                             |
+| `--brokers`, `--topic`   | `KAFKA_BROKERS`, `AUCTION_EVENTS_TOPIC`    | Where `--partitions 0` looks the count up                                                                                     |
+| `--out`                  | `tools/loadgen/out/manifest.json`          | Manifest path (compact JSON; read it with `jq`)                                                                               |
+| `--database-url`         | `DATABASE_URL`, the Compose database       | PostgreSQL                                                                                                                    |
+| `--api-url`              | `AUCTION_API_URL`, `http://localhost:3002` | auction-service                                                                                                               |
+| `--key`, `--jwks`        | `services/identity-service/.local-keys/…`  | Signing material from `pnpm auth:keys:local`; the JWKS entry that matches the key is used, and a JWKS without one is an error |
+| `--issuer`, `--audience` | `AUTH_ISSUER`, `AUTH_AUDIENCE`             | Must match auction-service's `AUTH_ISSUER` and `AUTH_AUDIENCE`                                                                |
+| `--ttl`                  | 5m                                         | At most auction-service's `ACCESS_TOKEN_TTL_SECONDS`                                                                          |
 
 Decisions worth knowing:
 
@@ -61,8 +62,26 @@ Decisions worth knowing:
 - **Auctions go through the API**, so they pass auction-service's validation and
   ownership rules. Tokens are minted in process with the local signing key.
 - **Creation has no idempotency key**, so only a failure to reach the server
-  (connection refused) is retried. After any other failure the auction may exist;
-  it is counted as failed, never sent twice. The command exits 1 if any failed.
+  (connection refused) is retried, never anything that might have been processed.
+  Every requested auction that is not in the manifest is counted as one of:
+  - _rejected_: the server answered 4xx, so the auction does not exist;
+  - _not sent_: the request never reached the server, or was never attempted
+    (including everything after an abort or Ctrl-C), so it does not exist;
+  - _unknown_: a 5xx, a timeout, a reset connection, or a request cut short by
+    Ctrl-C. **These may exist but are not in the manifest**, and rerunning will not
+    find them. In a run interrupted with Ctrl-C, all 31 requests that were in flight
+    turned out to exist in the database.
+
+  The counts always add up to the number requested, and the command exits 1 if any
+  auction is missing.
+
+- **A run that fails systematically stops itself.** After `--abort-after` failures
+  in a row (a wrong `--audience`, a `--ttl` the server rejects, auction-service
+  down) it stops handing out requests, lets those in flight finish, and reports why.
+  It never replaces an existing manifest with one that lists no auctions.
+- **Rerunning adds auctions.** Users are reused; auctions are not. Each run creates
+  the full number again, and the new manifest lists only that run's auctions, so
+  earlier ones are no longer in any manifest. Use a different `--out` to keep both.
 - **The end time is computed when each request is sent**, so a long seeding run
   does not leave later auctions with an almost-passed deadline. The finalizer
   closes auctions after `ends_at`, hence the 7-day default for load runs.
@@ -110,8 +129,12 @@ How to read it:
 - The sampler never counts the `bids` table, which at hundreds of millions of
   rows would be the load it is watching. Bid and order totals come from sequences,
   which is O(1). The outbox count reads a partial index holding only unpublished
-  rows, so its cost grows with the backlog it reports. The database reading is one
-  statement, so it costs one round trip.
+  rows, so its cost would grow with the backlog it reports; it counts at most
+  1,000,000 rows, so `outbox_unpublished` equal to 1,000,000 means "at least that
+  many". The oldest age comes from the front of the same index and stays exact.
+- The outbox is read in a statement of its own. If it times out, its three CSV
+  cells are empty for that tick and the summary says its peaks may be too low, but
+  bids, orders and connections are still recorded.
 - A tick waits at most `--read-timeout` (5 s by default) for PostgreSQL and Kafka,
   which is independent of `--interval`; the database's `statement_timeout` is set
   to the same value. A read that times out leaves a gap, and a slow tick delays the

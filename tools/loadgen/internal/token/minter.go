@@ -55,9 +55,13 @@ type header struct {
 }
 
 type jwks struct {
-	Keys []struct {
-		KeyID string `json:"kid"`
-	} `json:"keys"`
+	Keys []jwk `json:"keys"`
+}
+
+type jwk struct {
+	KeyID string `json:"kid"`
+	X     string `json:"x"`
+	Y     string `json:"y"`
 }
 
 // New builds a Minter from an ECDSA P-256 key. Every token it mints lives for
@@ -104,11 +108,30 @@ func Load(privateKeyPath, jwksPath, issuer, audience string, ttl time.Duration) 
 	if err != nil {
 		return nil, fmt.Errorf("parse jwks: %w", err)
 	}
-	if len(set.Keys) == 0 {
-		return nil, fmt.Errorf("jwks %s has no keys", jwksPath)
+	keyID, err := keyIDFor(key, set)
+	if err != nil {
+		return nil, fmt.Errorf("jwks %s: %w", jwksPath, err)
 	}
 
-	return New(key, set.Keys[0].KeyID, issuer, audience, ttl)
+	return New(key, keyID, issuer, audience, ttl)
+}
+
+// keyIDFor finds the JWKS entry for the private key's public point. Taking the
+// first entry instead would sign with the wrong kid after a key rotation or
+// against a stale jwks.json, and every request would then fail with a 401.
+func keyIDFor(key *ecdsa.PrivateKey, set jwks) (string, error) {
+	if len(set.Keys) == 0 {
+		return "", errors.New("has no keys")
+	}
+
+	x := base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, coordinateSize)))
+	y := base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, coordinateSize)))
+	for _, candidate := range set.Keys {
+		if candidate.X == x && candidate.Y == y && candidate.KeyID != "" {
+			return candidate.KeyID, nil
+		}
+	}
+	return "", errors.New("has no key matching the private key (stale jwks.json, or a key generated since?)")
 }
 
 // Mint returns a signed access token for a user, valid from now for the

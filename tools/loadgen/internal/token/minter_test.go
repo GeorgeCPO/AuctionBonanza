@@ -128,21 +128,7 @@ func TestNewRejectsWrongCurveAndMissingFields(t *testing.T) {
 
 func TestLoadReadsTheLocalKeyMaterial(t *testing.T) {
 	key := newTestKey(t)
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	directory := t.TempDir()
-	keyPath := filepath.Join(directory, "private-key.pem")
-	jwksPath := filepath.Join(directory, "jwks.json")
-	err = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = os.WriteFile(jwksPath, []byte(`{"keys":[{"kid":"local-2026-09","alg":"ES256","use":"sig"}]}`), 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
+	keyPath, jwksPath := writeKeyFiles(t, key, `{"keys":[`+jwksWith(key, "local-2026-09")+`]}`)
 
 	minter, err := Load(keyPath, jwksPath, "http://localhost:3001", "auction-api", time.Minute)
 	if err != nil {
@@ -157,6 +143,74 @@ func TestLoadReadsTheLocalKeyMaterial(t *testing.T) {
 	decodeSegment(t, strings.Split(value, ".")[0], &h)
 	if h.KeyID != "local-2026-09" {
 		t.Errorf("kid %q, want local-2026-09", h.KeyID)
+	}
+}
+
+func jwksWith(key *ecdsa.PrivateKey, keyID string) string {
+	x := base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, 32)))
+	y := base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, 32)))
+	return `{"kid":"` + keyID + `","kty":"EC","crv":"P-256","alg":"ES256","use":"sig","x":"` + x + `","y":"` + y + `"}`
+}
+
+func writeKeyFiles(t *testing.T, key *ecdsa.PrivateKey, jwksJSON string) (keyPath, jwksPath string) {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	keyPath = filepath.Join(directory, "private-key.pem")
+	jwksPath = filepath.Join(directory, "jwks.json")
+	err = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile(jwksPath, []byte(jwksJSON), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keyPath, jwksPath
+}
+
+func TestLoadPicksTheKeyThatMatchesNotTheFirstOne(t *testing.T) {
+	key := newTestKey(t)
+	rotatedOut := newTestKey(t)
+	keyPath, jwksPath := writeKeyFiles(t, key,
+		`{"keys":[`+jwksWith(rotatedOut, "old-key")+`,`+jwksWith(key, "current-key")+`]}`)
+
+	minter, err := Load(keyPath, jwksPath, "iss", "aud", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := minter.Mint("7", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var h header
+	decodeSegment(t, strings.Split(value, ".")[0], &h)
+	if h.KeyID != "current-key" {
+		t.Errorf("kid %q, want the entry that matches the private key", h.KeyID)
+	}
+}
+
+func TestLoadRejectsAJWKSWithoutTheKey(t *testing.T) {
+	key := newTestKey(t)
+	cases := map[string]string{
+		"stale file":     `{"keys":[` + jwksWith(newTestKey(t), "someone-else") + `]}`,
+		"empty key list": `{"keys":[]}`,
+		"no coordinates": `{"keys":[{"kid":"k","alg":"ES256"}]}`,
+		"unnamed key":    `{"keys":[` + jwksWith(key, "") + `]}`,
+	}
+
+	for name, jwksJSON := range cases {
+		keyPath, jwksPath := writeKeyFiles(t, key, jwksJSON)
+
+		_, err := Load(keyPath, jwksPath, "iss", "aud", time.Minute)
+
+		if err == nil {
+			t.Errorf("%s: a JWKS that cannot verify this key's tokens was accepted", name)
+		}
 	}
 }
 
