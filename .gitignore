@@ -9,3 +9,5 @@ coverage/
 .env.settlement
 .DS_Store
 services/identity-service/.local-keys/
+tools/loadgen/bin/
+tools/loadgen/out/
