@@ -79,6 +79,22 @@ their own temporary databases from `db/schema.sql` (the database user needs
 `19092`, which must be free; it reaches the broker through the test-only
 `FAULT_INJECTION` listener on `19093`.
 
+## The Go load tool
+
+`tools/loadgen` has its own gate, because `pnpm check` is Node-only and needs no
+Go toolchain. It follows the same tier rules: plain `go test` files are the unit
+tier, and files with `//go:build integration` use real PostgreSQL and Kafka.
+
+| Command                               | What it does                                                                                          | Needs Docker |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------ |
+| `pnpm loadgen:check`                  | `gofmt` (fails on unformatted files), `go vet`, vet of the integration files, unit tests with `-race` | No           |
+| `pnpm loadgen:test:integration`       | Integration tests; needs `TEST_DATABASE_URL` and `TEST_KAFKA_BROKERS`                                 | Yes          |
+| `pnpm loadgen:test:integration:local` | The same with the Compose endpoints from `scripts/local-test.env`                                     | Yes          |
+
+A missing variable fails the run, as in the other tiers. The tagged run also
+executes the unit tests of the packages it covers. CI runs both commands after the
+end-to-end tests. Go coverage is not measured or gated yet.
+
 ## Missing infrastructure fails the run
 
 The integration and end-to-end Vitest configurations refuse to start when a

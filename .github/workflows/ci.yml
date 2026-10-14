@@ -48,6 +48,12 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      # The load tool is Go; its version comes from tools/loadgen/go.mod.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tools/loadgen/go.mod
+          cache-dependency-path: tools/loadgen/go.sum
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -100,6 +106,11 @@ jobs:
       - name: Format, lint, typecheck, unit tests and build
         run: pnpm check
 
+      # The Go load tool's hermetic gate: gofmt, vet and unit tests. It needs no
+      # infrastructure, so a formatting error is reported before the slow tiers.
+      - name: Load tool checks
+        run: pnpm loadgen:check
+
       # The integration and end-to-end Vitest configurations refuse to start
       # when a TEST_* variable is missing, so neither tier can be skipped
       # silently. Separate steps make a failure name its tier.
@@ -108,6 +119,11 @@ jobs:
 
       - name: End-to-end tests
         run: pnpm test:e2e
+
+      # The Go load tool's integration tests refuse to start when a TEST_*
+      # variable is missing, like the other tiers.
+      - name: Load tool integration tests
+        run: pnpm loadgen:test:integration
 
       - name: Print infrastructure diagnostics
         if: failure()

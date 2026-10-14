@@ -31,6 +31,7 @@
 - Code that manages state belongs in a class that owns the state privately, not in functions that take and return it. A method that decides what to do returns the effects as data for the caller to carry out, rather than calling back into the caller. Pure functions are fine for stateless decisions.
 - Keep a module's types next to it in `<module>.types.ts`. Types derived from a schema stay in the file that defines the schema.
 - Never write one-line control statements such as `for (...) doThing();` or `if (x) return;`. Put the body on the next line inside `{ }`. The `curly` lint rule enforces this in `services/realtime-gateway` and `tests/e2e`; follow it in new code elsewhere too.
+- The same rules apply to Go in `tools/loadgen`, in Go's terms; `pnpm loadgen:check` enforces `gofmt` and `go vet`.
 - Do not call a function that returns a value directly in an `if` condition unless it is a checker or validator (`has`, `startsWith`, `isStale`, `Value.Check`). Assign the result to a named variable first, for example `const outcome = this.applyEvent(event); if (outcome === "gap") {`. This is not lint-checked.
 
 ## Correctness principles

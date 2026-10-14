@@ -288,3 +288,10 @@ curl -N 'http://localhost:3003/v1/stream?auctions=<id>'
 Each stream starts with one `snapshot` per auction (or `unavailable` for an
 auction that does not exist), then `bid-accepted` events; see
 [`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md#client-protocol).
+
+## Load tool
+
+`tools/loadgen` is a Go tool for the scale scenarios in
+[`ACCEPTANCE.md`](ACCEPTANCE.md): it seeds users and auctions and samples
+PostgreSQL and Kafka into CSV while a stack runs. Usage and the CSV columns are in
+[`tools/loadgen/README.md`](tools/loadgen/README.md).
