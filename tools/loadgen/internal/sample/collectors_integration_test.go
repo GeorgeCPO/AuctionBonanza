@@ -40,21 +40,19 @@ func insertAuction(t *testing.T, pool *pgxpool.Pool) {
 		SELECT id, now() - interval '1 hour', now() + interval '1 hour', 1000, 'd', 't', 'USD', 100 FROM users WHERE username = 'a'`)
 }
 
-// insertUnpublishedEvents gives every auction one unpublished event, occurring
-// age before now by the database's clock, not the test host's: the collector
+// insertUnpublishedEvents gives every auction one unpublished event, inserted in
+// auction order. Auction n gets ages[n-1], or the only age if one is given,
+// before now by the database's clock, not the test host's: the collector
 // measures age with the database's clock, and the two can differ. The schema
 // requires a version bump and its event to commit together, so both go in one
 // transaction.
-func insertUnpublishedEvents(t *testing.T, pool *pgxpool.Pool, age time.Duration) {
+func insertUnpublishedEvents(t *testing.T, pool *pgxpool.Pool, ages ...time.Duration) {
 	t.Helper()
 	ctx := context.Background()
 
-	var occurredAt string
-	err := pool.QueryRow(ctx,
-		`SELECT to_char((clock_timestamp() - $1::float8 * interval '1 second') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
-		age.Seconds()).Scan(&occurredAt)
-	if err != nil {
-		t.Fatal(err)
+	seconds := make([]float64, len(ages))
+	for i, age := range ages {
+		seconds[i] = age.Seconds()
 	}
 	transaction, err := pool.Begin(ctx)
 	if err != nil {
@@ -65,11 +63,18 @@ func insertUnpublishedEvents(t *testing.T, pool *pgxpool.Pool, age time.Duration
 		t.Fatal(err)
 	}
 	_, err = transaction.Exec(ctx, `
-		WITH events AS (SELECT gen_random_uuid() AS id, a.id AS auction_id FROM auctions a)
+		WITH numbered AS (
+		  SELECT a.id AS auction_id,
+		         gen_random_uuid() AS id,
+		         clock_timestamp() - ($1::float8[])[LEAST(row_number() OVER (ORDER BY a.id), cardinality($1::float8[]))] * interval '1 second' AS at
+		  FROM auctions a
+		)
 		INSERT INTO outbox_events (event_id, event_type, occurred_at, auction_id, auction_version, payload)
-		SELECT e.id, 'BidAccepted.v1', $1::timestamptz, e.auction_id, 2,
-		  jsonb_build_object('eventId', e.id::text, 'eventType', 'BidAccepted.v1', 'occurredAt', $1::text, 'auctionId', e.auction_id::text, 'auctionVersion', '2')
-		FROM events e`, occurredAt)
+		SELECT n.id, 'BidAccepted.v1', n.at, n.auction_id, 2,
+		  jsonb_build_object('eventId', n.id::text, 'eventType', 'BidAccepted.v1',
+		    'occurredAt', to_char(n.at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+		    'auctionId', n.auction_id::text, 'auctionVersion', '2')
+		FROM numbered n ORDER BY n.auction_id`, seconds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +162,54 @@ func TestPostgresCollectorCapsTheOutboxCountButNotTheAge(t *testing.T) {
 	}
 	if snapshot.OutboxOldestAgeSeconds < 7 {
 		t.Errorf("oldest age %.1fs, want it exact (about 7s) even when the count is capped", snapshot.OutboxOldestAgeSeconds)
+	}
+}
+
+func TestPostgresCollectorCountsRetriesAmongTheOldestEventsWhenCapped(t *testing.T) {
+	ctx := context.Background()
+	pool := testinfra.NewDatabase(t)
+	exec(t, pool, `INSERT INTO users (username, password_hash, email) VALUES ('a', 'x', 'a@example.test')`)
+	for range 5 {
+		insertAuction(t, pool)
+	}
+	// Auction 1 is the youngest event and auction 5 the oldest, so the rows sit in
+	// the table newest first. An unordered LIMIT 3 would scan auctions 1 to 3; the
+	// oldest three are auctions 3 to 5.
+	insertUnpublishedEvents(t, pool, 10*time.Second, 20*time.Second, 30*time.Second, 40*time.Second, 50*time.Second)
+	// Without an order, which three rows LIMIT returns depends on the plan: a
+	// partial-index scan happens to return the oldest first, a sequential scan
+	// returns them in insertion order. Forbid index scans so an unordered query
+	// would take the wrong three rows; the ordered one still takes the oldest.
+	exec(t, pool, `DO $$ BEGIN EXECUTE format(
+		'ALTER DATABASE %I SET enable_indexscan = off; ALTER DATABASE %I SET enable_bitmapscan = off; ALTER DATABASE %I SET enable_indexonlyscan = off',
+		current_database(), current_database(), current_database()); END $$`)
+	pool.Reset()
+	collector := NewPostgresCollector(pool)
+	collector.countCap = 3
+	retrying := func() int64 {
+		snapshot, err := collector.Collect(ctx)
+		if err != nil || snapshot.OutboxUnavailable != "" {
+			t.Fatalf("collect: %v %q", err, snapshot.OutboxUnavailable)
+		}
+		return snapshot.OutboxRetrying
+	}
+
+	// The oldest event is retrying and inside the oldest three. The UPDATE moves
+	// that row to the end of the table, so a sequential scan without an order
+	// would return auctions 1 to 3 and miss it.
+	exec(t, pool, `UPDATE outbox_events SET publish_attempts = 1 WHERE auction_id = (SELECT max(id) FROM auctions)`)
+	for range 3 {
+		if got := retrying(); got != 1 {
+			t.Fatalf("retrying %d, want 1: the oldest event is inside the capped scope", got)
+		}
+	}
+
+	// The two youngest events are retrying too, but they are outside the scope.
+	exec(t, pool, `UPDATE outbox_events SET publish_attempts = 1 WHERE auction_id IN (SELECT id FROM auctions ORDER BY id LIMIT 2)`)
+	for range 3 {
+		if got := retrying(); got != 1 {
+			t.Fatalf("retrying %d, want 1: events outside the oldest three are not counted", got)
+		}
 	}
 }
 

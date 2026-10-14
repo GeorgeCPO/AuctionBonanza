@@ -27,9 +27,13 @@ WHERE datname = current_database()
   AND backend_type = 'client backend'
   AND pid <> pg_backend_pid()`
 
-// outboxQuery counts at most $1 unpublished rows from the partial index that
-// holds only unpublished rows. The oldest age is min(occurred_at) over the same
-// index, which is one index entry however long the backlog.
+// outboxQuery counts at most $1 unpublished rows, the oldest ones, in the order
+// of the partial index that holds only unpublished rows. Taking the oldest keeps
+// the capped count's scope fixed from tick to tick (without an order, a different
+// sample could be counted each time). Events that keep failing tend to stay near
+// the front, since per-auction ordering holds back everything behind them. The
+// oldest age is min(occurred_at) over the same index, which is one index
+// entry however long the backlog.
 const outboxQuery = `
 SELECT
   counts.unpublished,
@@ -39,7 +43,11 @@ SELECT
   )), 0)::float8
 FROM (
   SELECT count(*) AS unpublished, count(*) FILTER (WHERE publish_attempts > 0) AS retrying
-  FROM (SELECT publish_attempts FROM outbox_events WHERE published_at IS NULL LIMIT $1) AS capped
+  FROM (
+    SELECT publish_attempts FROM outbox_events WHERE published_at IS NULL
+    ORDER BY occurred_at, event_id
+    LIMIT $1
+  ) AS capped
 ) AS counts`
 
 // PostgresCollector reads cheap, load-safe signals. It never counts the bids

@@ -109,17 +109,17 @@ still gets a row, so an outage shows up as a gap.
 
 `samples.csv`, one row per tick:
 
-| Column                            | Source                                                                      |
-| --------------------------------- | --------------------------------------------------------------------------- |
-| `bids_issued`, `bids_per_sec`     | `bids_id_seq`. An upper bound: ids burned by rolled-back transactions count |
-| `orders_issued`, `orders_per_sec` | `orders_id_seq`, same caveat                                                |
-| `outbox_unpublished`              | Rows in `outbox_events` with `published_at IS NULL`                         |
-| `outbox_oldest_age_s`             | Age of the oldest unpublished event                                         |
-| `outbox_retrying`                 | Unpublished events that already failed at least once                        |
-| `lock_waiters`                    | Connections waiting on a lock: the signature of a hot auction row           |
-| `idle_in_transaction`, `active`   | Connection states, excluding the sampler's own                              |
-| `events_per_sec`                  | Records per second arriving on the topic, all partitions                    |
-| `lag_<group>`                     | Records the group has yet to consume, summed over partitions                |
+| Column                            | Source                                                                           |
+| --------------------------------- | -------------------------------------------------------------------------------- |
+| `bids_issued`, `bids_per_sec`     | `bids_id_seq`. An upper bound: ids burned by rolled-back transactions count      |
+| `orders_issued`, `orders_per_sec` | `orders_id_seq`, same caveat                                                     |
+| `outbox_unpublished`              | Rows in `outbox_events` with `published_at IS NULL`                              |
+| `outbox_oldest_age_s`             | Age of the oldest unpublished event                                              |
+| `outbox_retrying`                 | Unpublished events that already failed at least once, among the oldest 1,000,000 |
+| `lock_waiters`                    | Connections waiting on a lock: the signature of a hot auction row                |
+| `idle_in_transaction`, `active`   | Connection states, excluding the sampler's own                                   |
+| `events_per_sec`                  | Records per second arriving on the topic, all partitions                         |
+| `lag_<group>`                     | Records the group has yet to consume, summed over partitions                     |
 
 `partitions.csv`, one row per partition per tick: `start_offset`, `end_offset`,
 `produce_per_sec`, and per group `committed_<group>` and `lag_<group>`.
@@ -132,6 +132,10 @@ How to read it:
   rows, so its cost would grow with the backlog it reports; it counts at most
   1,000,000 rows, so `outbox_unpublished` equal to 1,000,000 means "at least that
   many". The oldest age comes from the front of the same index and stays exact.
+  `outbox_retrying` is counted among those oldest 1,000,000 events, in index
+  order, so its scope is the same on every tick; past the cap it can miss retrying
+  events further back. Failing events tend to stay near the front, because
+  per-auction ordering holds back everything behind them.
 - The outbox is read in a statement of its own. If it times out, its three CSV
   cells are empty for that tick and the summary says its peaks may be too low, but
   bids, orders and connections are still recorded.
@@ -142,12 +146,19 @@ How to read it:
 - A group that has never committed on the topic (or does not exist) has empty
   lag cells, not zero. In a group that has committed somewhere, a partition with
   no commit counts its whole contents as lag, which assumes the group starts at
-  the earliest offset.
+  the earliest offset. A partition whose offset could not be read is different
+  from one with no commit: its cells are empty, and the group's total lag is empty
+  for that tick, because a total that skipped a partition would look complete.
 - Sampling only reads. It joins no consumer group, so it cannot trigger a
   rebalance.
 - Rates divide a counter's change by the time since the last _successful_ reading
   of that source, so a rate after a gap is an average over the gap. A counter that
   went down (a reset database, a recreated topic) gives no rate for that tick.
+- The summary's totals (bid and order ids issued, records produced per partition)
+  add up the growth between consecutive readings, so a counter that went down
+  contributes nothing for that interval, never a negative amount. After a reset
+  they can understate what happened, and the summary prints a warning with the
+  number of times a counter went backwards.
 
 ## Checks
 

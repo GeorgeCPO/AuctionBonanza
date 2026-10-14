@@ -127,3 +127,89 @@ func TestSummaryIgnoresTheOutboxOfTicksWhereItCouldNotBeRead(t *testing.T) {
 		t.Errorf("the summary does not warn that its outbox peaks may be too low:\n%s", out.String())
 	}
 }
+
+func pgReading(at time.Time, bids, orders int64) Observation {
+	return Observation{At: at, Postgres: &PostgresSnapshot{BidsIssued: bids, OrdersIssued: orders}}
+}
+
+func TestSummaryTotalsSurviveACounterReset(t *testing.T) {
+	builder := NewSummaryBuilder()
+	// 100 -> 200 is +100; 200 -> 5 is a reset (nothing counted); 5 -> 15 is +10.
+	feed(builder,
+		pgReading(epoch, 100, 10),
+		pgReading(epoch.Add(time.Second), 200, 12),
+		pgReading(epoch.Add(2*time.Second), 5, 0),
+		pgReading(epoch.Add(3*time.Second), 15, 1),
+	)
+
+	summary := builder.Build()
+
+	if summary.BidsIssued != 110 {
+		t.Errorf("bids %d, want 110 from the intervals either side of the reset", summary.BidsIssued)
+	}
+	if summary.OrdersIssued != 3 {
+		t.Errorf("orders %d, want 3 (+2, reset, +1)", summary.OrdersIssued)
+	}
+	if summary.CounterResets != 2 {
+		t.Errorf("resets %d, want 2: the bids counter and the orders counter each fell once", summary.CounterResets)
+	}
+	if summary.MeanBidRate <= 0 {
+		t.Errorf("mean bid rate %.2f, want a positive average over the whole run", summary.MeanBidRate)
+	}
+
+	var out bytes.Buffer
+	summary.Write(&out)
+	if !strings.Contains(out.String(), "counter went backwards 2 times") {
+		t.Errorf("the summary does not warn about the reset:\n%s", out.String())
+	}
+}
+
+func TestSummaryNeverReportsANegativeTotalWhateverTheCounterDoes(t *testing.T) {
+	builder := NewSummaryBuilder()
+	feed(builder, pgReading(epoch, 900, 0), pgReading(epoch.Add(time.Second), 3, 0))
+
+	summary := builder.Build()
+
+	if summary.BidsIssued < 0 || summary.MeanBidRate < 0 {
+		t.Errorf("a reset produced bids %d, mean %.2f", summary.BidsIssued, summary.MeanBidRate)
+	}
+}
+
+func kafkaReading(at time.Time, ends ...int64) Observation {
+	return Observation{At: at, Kafka: kafkaAt(ends...)}
+}
+
+func TestSummaryCountsProductionAcrossATopicRecreation(t *testing.T) {
+	builder := NewSummaryBuilder()
+	// Partition 0: 0 -> 100 (+100), recreated to 10 (nothing counted), 10 -> 60 (+50).
+	// Partition 1: 0 -> 30 -> 60 -> 90, no reset (+90).
+	feed(builder,
+		kafkaReading(epoch, 0, 0),
+		kafkaReading(epoch.Add(time.Second), 100, 30),
+		kafkaReading(epoch.Add(2*time.Second), 10, 60),
+		kafkaReading(epoch.Add(3*time.Second), 60, 90),
+	)
+
+	summary := builder.Build()
+
+	if len(summary.Partitions) != 2 || summary.Partitions[0].Produced != 150 || summary.Partitions[1].Produced != 90 {
+		t.Fatalf("produced per partition %+v, want 150 and 90", summary.Partitions)
+	}
+	if summary.CounterResets != 1 {
+		t.Errorf("resets %d, want 1", summary.CounterResets)
+	}
+	if summary.Hottest == nil || summary.Hottest.Partition != 0 {
+		t.Errorf("hottest %+v, want partition 0", summary.Hottest)
+	}
+}
+
+func TestSummaryListsAPartitionNothingWasProducedTo(t *testing.T) {
+	builder := NewSummaryBuilder()
+	feed(builder, kafkaReading(epoch, 5, 5, 5), kafkaReading(epoch.Add(time.Second), 5, 9, 5))
+
+	summary := builder.Build()
+
+	if len(summary.Partitions) != 3 || summary.Partitions[0].Produced != 0 || summary.Partitions[1].Produced != 4 {
+		t.Errorf("partitions %+v, want all three listed with 0, 4, 0 produced", summary.Partitions)
+	}
+}
