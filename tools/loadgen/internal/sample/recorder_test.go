@@ -114,3 +114,26 @@ func TestRecorderLeavesAnUncommittedGroupsCommitEmptyButKeepsItsLag(t *testing.T
 		t.Errorf("got %q", partitions.String())
 	}
 }
+
+func TestRecorderBlanksOnlyTheOutboxCellsWhenTheOutboxCouldNotBeRead(t *testing.T) {
+	var samples, partitions bytes.Buffer
+	recorder, err := NewCSVRecorder(&samples, &partitions, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = recorder.Record(Observation{
+		At: epoch,
+		Postgres: &PostgresSnapshot{
+			BidsIssued: 1200, OrdersIssued: 7, LockWaiters: 5, IdleInTransaction: 1, Active: 9,
+			OutboxUnavailable: "canceling statement due to statement timeout",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.HasSuffix(samples.String(), "2030-01-01T00:00:00Z,1200,,7,,,,,5,1,9,\n") {
+		t.Errorf("got %q: outbox cells must be empty and every other PostgreSQL cell kept", samples.String())
+	}
+}

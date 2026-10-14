@@ -18,12 +18,25 @@ type ManifestAuction struct {
 
 // Manifest is what a seeding run leaves behind for the stages that follow it.
 type Manifest struct {
-	CreatedAt      time.Time         `json:"createdAt"`
-	Partitions     int               `json:"partitions"`
-	Users          []User            `json:"users"`
-	Auctions       []ManifestAuction `json:"auctions"`
-	Failed         int               `json:"failed"`
-	FailureSamples []string          `json:"failureSamples,omitempty"`
+	CreatedAt  time.Time         `json:"createdAt"`
+	Partitions int               `json:"partitions"`
+	Users      []User            `json:"users"`
+	Auctions   []ManifestAuction `json:"auctions"`
+	// Rejected, NotSent and Unknown account for every requested auction that is
+	// not in Auctions. Rejected were refused by the server (4xx), so they do not
+	// exist. NotSent never reached the server, or were never attempted, so they
+	// do not exist either. Unknown may exist: the request was sent and no answer
+	// said what happened, so they can be in the database without being in this
+	// manifest, and a rerun will not reconcile them.
+	Rejected       int      `json:"rejected"`
+	NotSent        int      `json:"notSent"`
+	Unknown        int      `json:"unknown"`
+	FailureSamples []string `json:"failureSamples,omitempty"`
+}
+
+// Shortfall is how many requested auctions are not in the manifest.
+func (m Manifest) Shortfall() int {
+	return m.Rejected + m.NotSent + m.Unknown
 }
 
 // PartitionCounts is how many of the auctions map to each partition.

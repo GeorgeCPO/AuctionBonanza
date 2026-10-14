@@ -23,7 +23,10 @@ type Summary struct {
 	Ticks            int
 	PostgresFailures int
 	KafkaFailures    int
-	Elapsed          time.Duration
+	// OutboxFailures counts ticks where PostgreSQL answered but the outbox could
+	// not be read; the outbox peaks cover only the other ticks.
+	OutboxFailures int
+	Elapsed        time.Duration
 
 	BidsIssued   int64
 	MeanBidRate  float64
@@ -51,6 +54,7 @@ type SummaryBuilder struct {
 	ticks            int
 	postgresFailures int
 	kafkaFailures    int
+	outboxFailures   int
 	first, last      time.Time
 
 	firstPostgres, lastPostgres *Timed[PostgresSnapshot]
@@ -89,6 +93,7 @@ func (b *SummaryBuilder) Build() Summary {
 		Ticks:            b.ticks,
 		PostgresFailures: b.postgresFailures,
 		KafkaFailures:    b.kafkaFailures,
+		OutboxFailures:   b.outboxFailures,
 		Elapsed:          b.last.Sub(b.first),
 		PeakBidRate:      b.peakBidRate,
 
@@ -129,9 +134,13 @@ func (b *SummaryBuilder) addPostgres(o Observation) {
 	if o.BidRate != nil && *o.BidRate > b.peakBidRate {
 		b.peakBidRate = *o.BidRate
 	}
-	b.peaks.OutboxUnpublished = max(b.peaks.OutboxUnpublished, o.Postgres.OutboxUnpublished)
-	b.peaks.OutboxOldestAgeSeconds = max(b.peaks.OutboxOldestAgeSeconds, o.Postgres.OutboxOldestAgeSeconds)
-	b.peaks.OutboxRetrying = max(b.peaks.OutboxRetrying, o.Postgres.OutboxRetrying)
+	if o.Postgres.OutboxUnavailable == "" {
+		b.peaks.OutboxUnpublished = max(b.peaks.OutboxUnpublished, o.Postgres.OutboxUnpublished)
+		b.peaks.OutboxOldestAgeSeconds = max(b.peaks.OutboxOldestAgeSeconds, o.Postgres.OutboxOldestAgeSeconds)
+		b.peaks.OutboxRetrying = max(b.peaks.OutboxRetrying, o.Postgres.OutboxRetrying)
+	} else {
+		b.outboxFailures++
+	}
 	b.peaks.LockWaiters = max(b.peaks.LockWaiters, o.Postgres.LockWaiters)
 	b.peaks.IdleInTransaction = max(b.peaks.IdleInTransaction, o.Postgres.IdleInTransaction)
 }
@@ -156,6 +165,9 @@ func (s Summary) Write(w io.Writer) {
 		s.BidsIssued, s.MeanBidRate, s.PeakBidRate, s.OrdersIssued)
 	fmt.Fprintf(w, "outbox: peak %d unpublished, oldest %.1fs, peak %d retrying\n",
 		s.PeakOutboxUnpublished, s.PeakOutboxOldestAgeSeconds, s.PeakOutboxRetrying)
+	if s.OutboxFailures > 0 {
+		fmt.Fprintf(w, "WARNING: the outbox could not be read on %d ticks, so these peaks may be too low\n", s.OutboxFailures)
+	}
 	fmt.Fprintf(w, "connections: peak %d waiting on a lock, peak %d idle in transaction\n",
 		s.PeakLockWaiters, s.PeakIdleInTransaction)
 

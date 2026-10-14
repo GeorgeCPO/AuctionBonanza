@@ -20,6 +20,7 @@ func runSeed(ctx context.Context, args []string) int {
 	users := flags.Int("users", 100, "number of seeded users (at least 2)")
 	auctions := flags.Int("auctions", 1000, "number of auctions to create")
 	concurrency := flags.Int("concurrency", 16, "requests in flight")
+	abortAfter := flags.Int("abort-after", 10, "stop after this many failures in a row (0 never stops)")
 	duration := flags.Duration("duration", 7*24*time.Hour, fmt.Sprintf("how long each auction stays open (%s to %s)", seed.MinDuration, seed.MaxDuration))
 	currency := flags.String("currency", "USD", "auction currency")
 	partitions := flags.Int("partitions", 0, "partitions of the events topic; 0 asks the brokers")
@@ -63,22 +64,32 @@ func runSeed(ctx context.Context, args []string) int {
 		seed.NewPostgresUserStore(pool),
 		seed.NewAuctionClient(*apiURL, httpClient),
 		minter,
-		seed.Options{Partitions: partitionCount, Concurrency: *concurrency, Logger: logger},
+		seed.Options{Partitions: partitionCount, Concurrency: *concurrency, AbortAfter: *abortAfter, Logger: logger},
 	)
 
 	started := time.Now()
-	manifest, runErr := seeder.Run(ctx, seed.Spec{
+	spec := seed.Spec{
 		Users:           *users,
 		Auctions:        *auctions,
 		AuctionDuration: *duration,
 		CurrencyCode:    *currency,
-	})
+	}
+	manifest, runErr := seeder.Run(ctx, spec)
 	var interrupted *seed.InterruptedError
-	if runErr != nil && !errors.As(runErr, &interrupted) {
+	var aborted *seed.AbortedError
+	stoppedEarly := errors.As(runErr, &interrupted) || errors.As(runErr, &aborted)
+	if runErr != nil && !stoppedEarly {
 		logger.Error("seed", "error", runErr)
 		return 1
 	}
 
+	// A run that created nothing must not replace the manifest of an earlier run
+	// that did.
+	if len(manifest.Auctions) == 0 && spec.Auctions > 0 {
+		printSeedSummary(manifest, "", time.Since(started))
+		logger.Error("no auction was created, so the manifest was not written", "error", runErr)
+		return 1
+	}
 	writeErr := seed.WriteManifest(*out, manifest)
 	if writeErr != nil {
 		logger.Error("write manifest", "error", writeErr)
@@ -86,21 +97,30 @@ func runSeed(ctx context.Context, args []string) int {
 	}
 	printSeedSummary(manifest, *out, time.Since(started))
 
-	if interrupted != nil {
-		logger.Error("seed ended early", "error", interrupted)
+	if stoppedEarly {
+		logger.Error("seed stopped early", "error", runErr)
 		return 1
 	}
-	if manifest.Failed > 0 {
+	if manifest.Shortfall() > 0 {
 		return 1
 	}
 	return 0
 }
 
 func printSeedSummary(manifest seed.Manifest, path string, elapsed time.Duration) {
-	fmt.Printf("users: %d\nauctions created: %d\nauctions failed: %d\nelapsed: %s\nmanifest: %s\n",
-		len(manifest.Users), len(manifest.Auctions), manifest.Failed, elapsed.Round(time.Millisecond), path)
+	fmt.Printf("users: %d\nauctions created: %d\nelapsed: %s\n", len(manifest.Users), len(manifest.Auctions), elapsed.Round(time.Millisecond))
+	if path != "" {
+		fmt.Printf("manifest: %s\n", path)
+	}
+	if manifest.Shortfall() > 0 {
+		fmt.Printf("not created: %d (rejected by the server: %d, never sent: %d, outcome unknown: %d)\n",
+			manifest.Shortfall(), manifest.Rejected, manifest.NotSent, manifest.Unknown)
+	}
 	for _, note := range manifest.FailureSamples {
-		fmt.Printf("  failure: %s\n", note)
+		fmt.Printf("  %s\n", note)
+	}
+	if manifest.Unknown > 0 {
+		fmt.Printf("WARNING: %d auctions may exist but are not in the manifest, and rerunning will not find them.\n", manifest.Unknown)
 	}
 	fmt.Println("auctions per partition:")
 	for partition, count := range manifest.PartitionCounts() {

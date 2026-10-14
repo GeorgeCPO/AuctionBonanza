@@ -86,6 +86,12 @@ func (f *fakeCreator) Create(_ context.Context, bearer string, body CreateReques
 	}, nil
 }
 
+// accounted is every requested auction the manifest explains: created ones plus
+// each failure counter. A run must always account for all it was asked to make.
+func accounted(m Manifest) int {
+	return len(m.Auctions) + m.Shortfall()
+}
+
 func testSpec(auctions int) Spec {
 	return Spec{Users: 5, Auctions: auctions, AuctionDuration: 24 * time.Hour, CurrencyCode: "EUR"}
 }
@@ -109,8 +115,8 @@ func TestRunCreatesEveryAuctionAndRecordsItsPartition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(manifest.Auctions) != 240 || manifest.Failed != 0 {
-		t.Fatalf("created %d auctions with %d failures, want 240 and 0", len(manifest.Auctions), manifest.Failed)
+	if len(manifest.Auctions) != 240 || manifest.Shortfall() != 0 {
+		t.Fatalf("created %d auctions with %d failures, want 240 and 0", len(manifest.Auctions), manifest.Shortfall())
 	}
 	if len(manifest.Users) != 5 {
 		t.Errorf("manifest lists %d users, want 5", len(manifest.Users))
@@ -206,8 +212,8 @@ func TestRunRetriesAnUnsentRequestAndNothingElse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Failed != 0 || len(manifest.Auctions) != 40 {
-		t.Fatalf("dial failures were not retried: %d created, %d failed", len(manifest.Auctions), manifest.Failed)
+	if manifest.Shortfall() != 0 || len(manifest.Auctions) != 40 {
+		t.Fatalf("dial failures were not retried: %d created, %d failed", len(manifest.Auctions), manifest.Shortfall())
 	}
 	sent := creator.calls.Load()
 	if sent <= 40 {
@@ -236,8 +242,8 @@ func TestRunDoesNotRetryAnUnknownOutcome(t *testing.T) {
 	if sent != 5 {
 		t.Errorf("%d requests were sent for 5 auctions; the lost one must not be sent again", sent)
 	}
-	if manifest.Failed != 1 || len(manifest.Auctions) != 4 {
-		t.Errorf("expected 4 created and 1 failed, got %d and %d", len(manifest.Auctions), manifest.Failed)
+	if manifest.Unknown != 1 || manifest.Shortfall() != 1 || len(manifest.Auctions) != 4 {
+		t.Errorf("expected 4 created and 1 unknown, got %d created, unknown %d, shortfall %d", len(manifest.Auctions), manifest.Unknown, manifest.Shortfall())
 	}
 	if len(manifest.FailureSamples) != 1 {
 		t.Errorf("failure samples %v", manifest.FailureSamples)
@@ -260,8 +266,8 @@ func TestRunGivesUpAfterThreeUnsentAttempts(t *testing.T) {
 	if attempts != 6 {
 		t.Errorf("%d attempts for 2 auctions, want 3 each", attempts)
 	}
-	if manifest.Failed != 2 || len(manifest.Auctions) != 0 {
-		t.Errorf("expected 2 failures and no auctions, got %d and %d", manifest.Failed, len(manifest.Auctions))
+	if manifest.NotSent != 2 || manifest.Shortfall() != 2 || len(manifest.Auctions) != 0 {
+		t.Errorf("expected 2 not-sent and no auctions, got not sent %d, shortfall %d, created %d", manifest.NotSent, manifest.Shortfall(), len(manifest.Auctions))
 	}
 }
 
@@ -274,8 +280,8 @@ func TestRunCapsRecordedFailureSamples(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Failed != 30 || len(manifest.FailureSamples) != 5 {
-		t.Errorf("failed %d with %d samples, want 30 and 5", manifest.Failed, len(manifest.FailureSamples))
+	if manifest.Unknown != 30 || len(manifest.FailureSamples) != 5 {
+		t.Errorf("unknown %d with %d samples, want 30 and 5", manifest.Unknown, len(manifest.FailureSamples))
 	}
 }
 
@@ -300,6 +306,15 @@ func TestRunStopsWhenTheContextEnds(t *testing.T) {
 	}
 	if len(manifest.Auctions) < 9 || len(manifest.Auctions) >= 1000 {
 		t.Errorf("partial manifest has %d auctions, expected about 10", len(manifest.Auctions))
+	}
+	if accounted(manifest) != 1000 {
+		t.Errorf("manifest accounts for %d of 1000 requested auctions", accounted(manifest))
+	}
+	if manifest.Rejected != 0 || manifest.Unknown != 0 {
+		t.Errorf("stopping mid-run reported %d rejected and %d unknown; requests that were never sent are not failures of either kind", manifest.Rejected, manifest.Unknown)
+	}
+	if manifest.NotSent < 900 {
+		t.Errorf("only %d auctions counted as not sent after stopping at about 10", manifest.NotSent)
 	}
 }
 
@@ -356,5 +371,187 @@ func TestRunRejectsAnInvalidSpecBeforeTouchingAnything(t *testing.T) {
 
 	if err == nil || creator.calls.Load() != 0 {
 		t.Fatalf("invalid spec ran: err=%v calls=%d", err, creator.calls.Load())
+	}
+}
+
+func TestRunClassifiesServerAnswersByWhetherTheAuctionCanExist(t *testing.T) {
+	cases := map[string]struct {
+		err                             error
+		rejected, notSent, unknownCount int
+	}{
+		"bad request":        {&StatusError{StatusCode: 400}, 1, 0, 0},
+		"unauthorized":       {&StatusError{StatusCode: 401}, 1, 0, 0},
+		"conflict":           {&StatusError{StatusCode: 409}, 1, 0, 0},
+		"server error":       {&StatusError{StatusCode: 500}, 0, 0, 1},
+		"bad gateway":        {&StatusError{StatusCode: 502}, 0, 0, 1},
+		"lost response":      {errors.New("read: connection reset by peer"), 0, 0, 1},
+		"refused connection": {fmt.Errorf("%w: refused", ErrNotSent), 0, 1, 0},
+	}
+
+	for name, tc := range cases {
+		creator := &fakeCreator{failWith: func(int64, string) error { return tc.err }}
+		options := testOptions()
+		options.Concurrency = 1
+		seeder := NewSeeder(fakeUsers{}, creator, &fakeTokens{}, options)
+
+		manifest, err := seeder.Run(context.Background(), testSpec(1))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+
+		if manifest.Rejected != tc.rejected || manifest.NotSent != tc.notSent || manifest.Unknown != tc.unknownCount {
+			t.Errorf("%s: rejected %d, not sent %d, unknown %d; want %d, %d, %d",
+				name, manifest.Rejected, manifest.NotSent, manifest.Unknown, tc.rejected, tc.notSent, tc.unknownCount)
+		}
+	}
+}
+
+func TestRunAbortsAfterTooManyFailuresInARow(t *testing.T) {
+	creator := &fakeCreator{failWith: func(int64, string) error { return &StatusError{StatusCode: 401, Body: "wrong audience"} }}
+	options := testOptions()
+	options.AbortAfter = 5
+	seeder := NewSeeder(fakeUsers{}, creator, &fakeTokens{}, options)
+
+	manifest, err := seeder.Run(context.Background(), testSpec(1000))
+
+	var aborted *AbortedError
+	if !errors.As(err, &aborted) || aborted.Consecutive < 5 {
+		t.Fatalf("expected an AbortedError after at least 5 failures, got %v", err)
+	}
+	var status *StatusError
+	if !errors.As(err, &status) || status.StatusCode != 401 {
+		t.Errorf("the abort does not carry the failure that caused it: %v", err)
+	}
+	// Requests already in flight, and results waiting in the channel, still count.
+	if sent, limit := creator.calls.Load(), int64(5+2*options.Concurrency); sent > limit {
+		t.Errorf("%d requests were sent, want at most %d: the run should stop soon after the 5th failure", sent, limit)
+	}
+	if accounted(manifest) != 1000 {
+		t.Errorf("manifest accounts for %d of 1000 requested auctions", accounted(manifest))
+	}
+	if manifest.NotSent < 900 {
+		t.Errorf("%d auctions counted as not sent, want nearly all of the unattempted ones", manifest.NotSent)
+	}
+}
+
+func TestRunDoesNotAbortWhileSuccessesKeepInterrupting(t *testing.T) {
+	creator := &fakeCreator{failWith: func(call int64, _ string) error {
+		if call%3 != 0 {
+			return &StatusError{StatusCode: 422}
+		}
+		return nil
+	}}
+	options := testOptions()
+	options.Concurrency = 1
+	options.AbortAfter = 3
+	seeder := NewSeeder(fakeUsers{}, creator, &fakeTokens{}, options)
+
+	manifest, err := seeder.Run(context.Background(), testSpec(30))
+
+	if err != nil {
+		t.Fatalf("two failures then a success is not a streak of 3, got %v", err)
+	}
+	if len(manifest.Auctions) != 10 || manifest.Rejected != 20 {
+		t.Errorf("created %d, rejected %d, want 10 and 20", len(manifest.Auctions), manifest.Rejected)
+	}
+}
+
+func TestRunNeverAbortsWhenAbortAfterIsZero(t *testing.T) {
+	creator := &fakeCreator{failWith: func(int64, string) error { return &StatusError{StatusCode: 400} }}
+	seeder := NewSeeder(fakeUsers{}, creator, &fakeTokens{}, testOptions())
+
+	manifest, err := seeder.Run(context.Background(), testSpec(50))
+
+	if err != nil || manifest.Rejected != 50 {
+		t.Fatalf("err %v, rejected %d, want every request attempted", err, manifest.Rejected)
+	}
+}
+
+func TestRunIsNotInterruptedWhenTheContextEndsAfterTheWorkIsDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	creator := &fakeCreator{failWith: func(call int64, _ string) error {
+		if call == 5 {
+			cancel()
+		}
+		return nil
+	}}
+	options := testOptions()
+	options.Concurrency = 1
+	seeder := NewSeeder(fakeUsers{}, creator, &fakeTokens{}, options)
+
+	// Cancelling during the last request leaves nothing unfinished.
+	manifest, err := seeder.Run(ctx, testSpec(5))
+
+	if err != nil || len(manifest.Auctions) != 5 {
+		t.Fatalf("a run that finished everything reported %v with %d auctions", err, len(manifest.Auctions))
+	}
+}
+
+// patientCreator answers after a short wait and gives up only if its context
+// ends, like a real HTTP request.
+type patientCreator struct {
+	calls atomic.Int64
+	err   error
+	// onCall, if set, runs when a request arrives, with how many have arrived.
+	onCall func(call int64)
+}
+
+func (c *patientCreator) Create(ctx context.Context, _ string, _ CreateRequest) (CreatedAuction, error) {
+	call := c.calls.Add(1)
+	if c.onCall != nil {
+		c.onCall(call)
+	}
+	select {
+	case <-time.After(5 * time.Millisecond):
+		return CreatedAuction{}, c.err
+	case <-ctx.Done():
+		return CreatedAuction{}, ctx.Err()
+	}
+}
+
+func TestRunLetsRequestsInFlightFinishWhenItAbortsItself(t *testing.T) {
+	creator := &patientCreator{err: &StatusError{StatusCode: 401}}
+	options := testOptions()
+	options.AbortAfter = 4
+	seeder := NewSeeder(fakeUsers{}, creator, &fakeTokens{}, options)
+
+	manifest, err := seeder.Run(context.Background(), testSpec(1000))
+
+	var aborted *AbortedError
+	if !errors.As(err, &aborted) {
+		t.Fatalf("expected an abort, got %v", err)
+	}
+	if manifest.Unknown != 0 {
+		t.Errorf("%d outcomes are unknown: aborting must not cancel requests that were already sent", manifest.Unknown)
+	}
+	if accounted(manifest) != 1000 {
+		t.Errorf("manifest accounts for %d of 1000 requested auctions", accounted(manifest))
+	}
+}
+
+func TestRunCutsRequestsInFlightShortWhenTheCallerStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Stop once the fourth request has arrived: all four workers are then inside
+	// a request that waits 5 ms unless its context ends first.
+	creator := &patientCreator{err: errors.New("unused"), onCall: func(call int64) {
+		if call == 4 {
+			cancel()
+		}
+	}}
+	options := testOptions()
+	options.Concurrency = 4
+	seeder := NewSeeder(fakeUsers{}, creator, &fakeTokens{}, options)
+
+	manifest, err := seeder.Run(ctx, testSpec(1000))
+
+	var interrupted *InterruptedError
+	if !errors.As(err, &interrupted) {
+		t.Fatalf("expected an interruption, got %v", err)
+	}
+	if manifest.Unknown == 0 {
+		t.Error("requests cancelled mid-flight may have been processed, so they are unknown")
+	}
+	if accounted(manifest) != 1000 {
+		t.Errorf("manifest accounts for %d of 1000 requested auctions", accounted(manifest))
 	}
 }

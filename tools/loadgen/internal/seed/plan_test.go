@@ -44,7 +44,9 @@ func TestBuildPlanRejectsInvalidSpecs(t *testing.T) {
 		"negative count":   func(s *Spec) { s.Auctions = -1 },
 		"duration too low": func(s *Spec) { s.AuctionDuration = time.Minute },
 		"duration too big": func(s *Spec) { s.AuctionDuration = 30 * 24 * time.Hour },
-		"bad currency":     func(s *Spec) { s.CurrencyCode = "US" },
+		"short currency":   func(s *Spec) { s.CurrencyCode = "US" },
+		"lowercase":        func(s *Spec) { s.CurrencyCode = "usd" },
+		"not letters":      func(s *Spec) { s.CurrencyCode = "U5D" },
 	}
 
 	for name, mutate := range cases {

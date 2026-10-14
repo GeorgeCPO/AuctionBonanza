@@ -74,12 +74,13 @@ func (r *CSVRecorder) samplesRow(at string, o Observation) []string {
 		row = append(row, make([]string, 10)...)
 	} else {
 		p := o.Postgres
-		row = append(row,
-			integer(p.BidsIssued), optional(o.BidRate),
-			integer(p.OrdersIssued), optional(o.OrderRate),
-			integer(p.OutboxUnpublished), decimal(p.OutboxOldestAgeSeconds), integer(p.OutboxRetrying),
-			integer(p.LockWaiters), integer(p.IdleInTransaction), integer(p.Active),
-		)
+		row = append(row, integer(p.BidsIssued), optional(o.BidRate), integer(p.OrdersIssued), optional(o.OrderRate))
+		if p.OutboxUnavailable == "" {
+			row = append(row, integer(p.OutboxUnpublished), decimal(p.OutboxOldestAgeSeconds), integer(p.OutboxRetrying))
+		} else {
+			row = append(row, "", "", "")
+		}
+		row = append(row, integer(p.LockWaiters), integer(p.IdleInTransaction), integer(p.Active))
 	}
 	row = append(row, optional(o.EventRate))
 

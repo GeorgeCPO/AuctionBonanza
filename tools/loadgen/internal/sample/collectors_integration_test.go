@@ -40,6 +40,45 @@ func insertAuction(t *testing.T, pool *pgxpool.Pool) {
 		SELECT id, now() - interval '1 hour', now() + interval '1 hour', 1000, 'd', 't', 'USD', 100 FROM users WHERE username = 'a'`)
 }
 
+// insertUnpublishedEvents gives every auction one unpublished event, occurring
+// age before now by the database's clock, not the test host's: the collector
+// measures age with the database's clock, and the two can differ. The schema
+// requires a version bump and its event to commit together, so both go in one
+// transaction.
+func insertUnpublishedEvents(t *testing.T, pool *pgxpool.Pool, age time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+
+	var occurredAt string
+	err := pool.QueryRow(ctx,
+		`SELECT to_char((clock_timestamp() - $1::float8 * interval '1 second') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+		age.Seconds()).Scan(&occurredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = transaction.Exec(ctx, `UPDATE auctions SET version = 2`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = transaction.Exec(ctx, `
+		WITH events AS (SELECT gen_random_uuid() AS id, a.id AS auction_id FROM auctions a)
+		INSERT INTO outbox_events (event_id, event_type, occurred_at, auction_id, auction_version, payload)
+		SELECT e.id, 'BidAccepted.v1', $1::timestamptz, e.auction_id, 2,
+		  jsonb_build_object('eventId', e.id::text, 'eventType', 'BidAccepted.v1', 'occurredAt', $1::text, 'auctionId', e.auction_id::text, 'auctionVersion', '2')
+		FROM events e`, occurredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = transaction.Commit(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgresCollectorOnAnEmptyDatabase(t *testing.T) {
 	pool := testinfra.NewDatabase(t)
 
@@ -63,36 +102,7 @@ func TestPostgresCollectorReadsCountersAndTheOutbox(t *testing.T) {
 		SELECT a.id, u.id, 1000 + n * 100, 'k' || n, now()
 		FROM auctions a, users u, generate_series(1, 3) AS n WHERE u.username = 'b'`)
 
-	// One unpublished event. The schema requires a version bump and its event
-	// to commit together, so both go in one transaction.
-	const eventID = "00000000-0000-4000-8000-000000000001"
-	// Three seconds before now by the database's clock, not the test host's: the
-	// collector measures age with the database's clock, and the two can differ.
-	var occurredAt string
-	err := pool.QueryRow(ctx, `SELECT to_char((clock_timestamp() - interval '3 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`).Scan(&occurredAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	transaction, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = transaction.Exec(ctx, `UPDATE auctions SET version = 2`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = transaction.Exec(ctx, `
-		INSERT INTO outbox_events (event_id, event_type, occurred_at, auction_id, auction_version, payload)
-		SELECT $1::uuid, 'BidAccepted.v1', $2::timestamptz, a.id, 2,
-		  jsonb_build_object('eventId', $1::text, 'eventType', 'BidAccepted.v1', 'occurredAt', $2::text, 'auctionId', a.id::text, 'auctionVersion', '2')
-		FROM auctions a`, eventID, occurredAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = transaction.Commit(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	insertUnpublishedEvents(t, pool, 3*time.Second)
 
 	collector := NewPostgresCollector(pool)
 	snapshot, err := collector.Collect(ctx)
@@ -120,6 +130,57 @@ func TestPostgresCollectorReadsCountersAndTheOutbox(t *testing.T) {
 	snapshot, err = collector.Collect(ctx)
 	if err != nil || snapshot.OutboxUnpublished != 0 || snapshot.OutboxOldestAgeSeconds != 0 {
 		t.Errorf("after publishing: %+v (err %v), want an empty backlog", snapshot, err)
+	}
+}
+
+func TestPostgresCollectorCapsTheOutboxCountButNotTheAge(t *testing.T) {
+	ctx := context.Background()
+	pool := testinfra.NewDatabase(t)
+	exec(t, pool, `INSERT INTO users (username, password_hash, email) VALUES ('a', 'x', 'a@example.test')`)
+	for range 5 {
+		insertAuction(t, pool)
+	}
+	insertUnpublishedEvents(t, pool, 7*time.Second)
+	collector := NewPostgresCollector(pool)
+	collector.countCap = 3
+
+	snapshot, err := collector.Collect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if snapshot.OutboxUnavailable != "" {
+		t.Fatalf("outbox unavailable: %s", snapshot.OutboxUnavailable)
+	}
+	if snapshot.OutboxUnpublished != 3 {
+		t.Errorf("counted %d of 5 unpublished events, want the cap of 3", snapshot.OutboxUnpublished)
+	}
+	if snapshot.OutboxOldestAgeSeconds < 7 {
+		t.Errorf("oldest age %.1fs, want it exact (about 7s) even when the count is capped", snapshot.OutboxOldestAgeSeconds)
+	}
+}
+
+func TestPostgresCollectorKeepsTheCountersWhenOnlyTheOutboxFails(t *testing.T) {
+	ctx := context.Background()
+	pool := testinfra.NewDatabase(t)
+	exec(t, pool, `INSERT INTO users (username, password_hash, email) VALUES ('a', 'x', 'a@example.test'), ('b', 'x', 'b@example.test')`)
+	insertAuction(t, pool)
+	exec(t, pool, `
+		INSERT INTO bids (auction_id, bidder_id, amount_minor, idempotency_key, created_at)
+		SELECT a.id, u.id, 1000 + n * 100, 'k' || n, now()
+		FROM auctions a, users u, generate_series(1, 4) AS n WHERE u.username = 'b'`)
+	exec(t, pool, `DROP TABLE outbox_events`)
+
+	snapshot, err := NewPostgresCollector(pool).Collect(ctx)
+
+	if err != nil {
+		t.Fatalf("a failing outbox read failed the whole snapshot: %v", err)
+	}
+	if snapshot.OutboxUnavailable == "" {
+		t.Error("the outbox failure was not reported")
+	}
+	if snapshot.BidsIssued != 4 {
+		t.Errorf("bids %d, want 4: the counters must survive an outbox failure", snapshot.BidsIssued)
 	}
 }
 

@@ -5,6 +5,7 @@ package seed
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -15,6 +16,10 @@ const (
 	MinDuration = 2 * time.Minute
 	MaxDuration = 29 * 24 * time.Hour
 )
+
+// currencyCodePattern is what the API accepts; anything else would fail every
+// request.
+var currencyCodePattern = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // Spec says how much to seed.
 type Spec struct {
@@ -52,8 +57,8 @@ func BuildPlan(spec Spec) ([]AuctionRequest, error) {
 	if spec.AuctionDuration < MinDuration || spec.AuctionDuration > MaxDuration {
 		return nil, fmt.Errorf("auction duration must be between %s and %s", MinDuration, MaxDuration)
 	}
-	if len(spec.CurrencyCode) != 3 {
-		return nil, errors.New("currency code must have 3 letters")
+	if !currencyCodePattern.MatchString(spec.CurrencyCode) {
+		return nil, errors.New("currency code must be 3 uppercase letters")
 	}
 
 	auctions := make([]AuctionRequest, spec.Auctions)

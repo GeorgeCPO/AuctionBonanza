@@ -135,6 +135,9 @@ func (s *Sampler) collect(ctx context.Context) (*Timed[PostgresSnapshot], *Timed
 			return
 		}
 		postgres = &Timed[PostgresSnapshot]{At: s.options.Now(), Value: snapshot}
+		if snapshot.OutboxUnavailable != "" {
+			s.logFailure(ctx, "postgres outbox", errors.New(snapshot.OutboxUnavailable))
+		}
 	}()
 	go func() {
 		defer readers.Done()
