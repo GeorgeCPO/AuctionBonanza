@@ -70,26 +70,36 @@ func (c *KafkaCollector) Collect(ctx context.Context) (KafkaSnapshot, error) {
 		if response.Err != nil {
 			return KafkaSnapshot{}, fmt.Errorf("fetch offsets of group %s: %w", group, response.Err)
 		}
-		addGroup(&snapshot, group, committedOffsets(response, c.topic))
+		committed, failed := committedOffsets(response, c.topic)
+		addGroup(&snapshot, group, committed, failed)
 	}
 	return snapshot, nil
 }
 
-// committedOffsets are a group's valid commits on the topic.
-func committedOffsets(response kadm.FetchOffsetsResponse, topic string) map[int32]int64 {
-	committed := map[int32]int64{}
+// committedOffsets splits a group's per-partition answers into valid commits and
+// partitions whose answer was an error. An errored partition is not an
+// uncommitted one: treating it as uncommitted would report its whole contents as
+// lag.
+func committedOffsets(response kadm.FetchOffsetsResponse, topic string) (committed map[int32]int64, failed map[int32]bool) {
+	committed = map[int32]int64{}
+	failed = map[int32]bool{}
 	for _, offset := range response.Fetched[topic] {
-		if offset.Err == nil && offset.At >= 0 {
+		switch {
+		case offset.Err != nil:
+			failed[offset.Partition] = true
+		case offset.At >= 0:
 			committed[offset.Partition] = offset.At
 		}
 	}
-	return committed
+	return committed, failed
 }
 
 // addGroup records a group's progress if it has committed anything on the
 // topic. A group that does not exist, or has never committed, is left out
-// entirely, so it appears as unknown rather than as zero lag.
-func addGroup(snapshot *KafkaSnapshot, group string, committed map[int32]int64) {
+// entirely, so it appears as unknown rather than as zero lag. A partition whose
+// offset could not be read is left out of its group's progress, and the group's
+// total is then unknown too: a total that skipped it would look complete.
+func addGroup(snapshot *KafkaSnapshot, group string, committed map[int32]int64, failed map[int32]bool) {
 	if len(committed) == 0 {
 		return
 	}
@@ -97,6 +107,9 @@ func addGroup(snapshot *KafkaSnapshot, group string, committed map[int32]int64) 
 	var total int64
 	for i := range snapshot.Partitions {
 		partition := &snapshot.Partitions[i]
+		if failed[partition.Partition] {
+			continue
+		}
 		position, hasCommit := committed[partition.Partition]
 		progress := GroupProgress{Committed: -1}
 		if hasCommit {
@@ -108,5 +121,7 @@ func addGroup(snapshot *KafkaSnapshot, group string, committed map[int32]int64) 
 		partition.Groups[group] = progress
 		total += progress.Lag
 	}
-	snapshot.GroupLag[group] = total
+	if len(failed) == 0 {
+		snapshot.GroupLag[group] = total
+	}
 }

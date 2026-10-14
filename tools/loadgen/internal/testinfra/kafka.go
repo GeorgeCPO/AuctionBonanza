@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -44,5 +45,37 @@ func NewTopic(t testing.TB, client *kgo.Client, partitions int32) string {
 			t.Errorf("delete topic %s: %v", name, deleteErr)
 		}
 	})
+	waitUntilVisible(t, admin, name, int(partitions))
 	return name
+}
+
+// waitUntilVisible returns once the brokers report the topic with all its
+// partitions led. A created topic is not visible at once: asking right away can
+// answer UNKNOWN_TOPIC_OR_PARTITION, and the busier the machine the likelier it
+// is.
+func waitUntilVisible(t testing.TB, admin *kadm.Client, name string, partitions int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		details, err := admin.ListTopics(context.Background(), name)
+		if err == nil {
+			detail := details[name]
+			if detail.Err == nil && len(detail.Partitions) == partitions && allLed(detail.Partitions) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("topic %s did not become visible with %d partitions", name, partitions)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func allLed(partitions kadm.PartitionDetails) bool {
+	for _, partition := range partitions {
+		if partition.Err != nil || partition.Leader < 0 {
+			return false
+		}
+	}
+	return true
 }
