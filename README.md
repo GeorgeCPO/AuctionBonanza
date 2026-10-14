@@ -78,6 +78,18 @@ deliberate operation. Inspect topics with:
 docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic auction.events
 ```
 
+To browse topics, messages, and consumer-group lag in a web UI, start Kafbat UI
+and open <http://localhost:8080>:
+
+```sh
+docker compose up -d kafka-ui
+```
+
+It connects to `kafka:29092` like any other container client and is bound to
+`127.0.0.1` because it has no login and can delete topics and reset offsets. It
+is a local tool; a production deployment would need authentication and a
+read-only configuration.
+
 The broker also exposes a test-only `FAULT_INJECTION` listener on
 `localhost:19093` that advertises `localhost:19092`, where the Kafka outage
 integration test runs a TCP proxy. Nothing else should use it.
