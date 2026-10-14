@@ -197,6 +197,24 @@ services:
     ports:
       - "7003:7003"
 
+  # Web UI for inspecting topics, messages and consumer-group lag at
+  # http://localhost:8080. It connects as an ordinary client on the internal
+  # listener; the FAULT_INJECTION listener is for the outage test only. It has no
+  # login and can delete topics and reset offsets, so it is bound to loopback.
+  # Production needs a read-only, authenticated deployment instead.
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: auction-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      # Cluster list comes from this file only, not from UI-edited state.
+      DYNAMIC_CONFIG_ENABLED: "false"
+    ports:
+      - "127.0.0.1:8080:8080"
+
   # Forms the cluster the integration tests share. Every test that publishes or
   # subscribes uses it, so nothing may change its slot ownership.
   valkey-init:
