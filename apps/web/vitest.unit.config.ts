@@ -12,6 +12,7 @@ export default defineConfig({
         "src/api/**/*.ts",
         "src/auth/**/*.ts",
         "src/live/live-auction-book.ts",
+        "src/live/live-stream.ts",
         "src/live/phase.ts",
         "src/money.ts",
         "src/error-messages.ts",

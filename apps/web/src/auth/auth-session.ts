@@ -72,11 +72,20 @@ export class AuthSession {
   }
 
   private async refresh(refreshToken: string): Promise<string | undefined> {
+    // The session this refresh belongs to. If the user signs out or in again
+    // while it is in flight, its result is stale and must not replace theirs.
+    const started = this.credentials;
     try {
       const credentials = await this.options.identity.refresh(refreshToken);
+      if (this.credentials !== started) {
+        return undefined;
+      }
       this.setCredentials(credentials);
       return credentials.accessToken;
     } catch {
+      if (this.credentials !== started) {
+        return undefined;
+      }
       // The token may or may not have been consumed (a lost response looks the
       // same as a rejection), so the only safe recovery is a fresh login.
       this.clear();

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import { describeError } from "../error-messages.js";
@@ -11,6 +11,7 @@ export function AuthPanel() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
 
   async function submit(mode: "login" | "register"): Promise<void> {
     setBusy(true);
@@ -42,6 +43,7 @@ export function AuthPanel() {
 
   return (
     <form
+      ref={formRef}
       className="auth"
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
@@ -66,7 +68,17 @@ export function AuthPanel() {
       <button type="submit" disabled={busy}>
         Sign in
       </button>
-      <button type="button" disabled={busy} onClick={() => void submit("register")}>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => {
+          // A type="button" skips the form's own validation, so run it here.
+          const isValid = formRef.current?.reportValidity() ?? false;
+          if (isValid) {
+            void submit("register");
+          }
+        }}
+      >
         Register
       </button>
       {error !== undefined && <span className="error">{error}</span>}

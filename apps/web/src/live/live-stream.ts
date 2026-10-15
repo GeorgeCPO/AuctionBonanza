@@ -53,20 +53,19 @@ export class LiveStream {
       return;
     }
     this.ids = next;
+    this.retryDelayMs = FIRST_RETRY_MS;
     this.disconnect();
     this.book.retain(new Set(next));
+    this.update({ entries: this.book.entriesSnapshot() });
     if (next.length === 0) {
-      this.update({ status: "idle", entries: this.book.entriesSnapshot() });
+      this.update({ status: "idle" });
       return;
     }
     this.connect("connecting");
   }
 
   close(): void {
-    this.ids = [];
-    this.disconnect();
-    this.book.retain(new Set());
-    this.update({ status: "idle", entries: this.book.entriesSnapshot() });
+    this.watch([]);
   }
 
   private connect(status: "connecting" | "reconnecting"): void {
@@ -109,6 +108,14 @@ export class LiveStream {
     try {
       data = JSON.parse(raw);
     } catch {
+      this.log(undefined, `unreadable ${name} frame`);
+      return;
+    }
+    const hasAuctionId =
+      typeof data === "object" &&
+      data !== null &&
+      typeof (data as { auctionId?: unknown }).auctionId === "string";
+    if (!hasAuctionId) {
       this.log(undefined, `unreadable ${name} frame`);
       return;
     }

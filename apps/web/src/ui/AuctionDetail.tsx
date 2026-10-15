@@ -6,14 +6,10 @@ import { formatCountdown } from "../live/phase.js";
 import { useLiveAuctions } from "../live/use-live-auctions.js";
 import { addMinor, formatMinor, formatMoney, parseMajorToMinor } from "../money.js";
 import { auctionApi, auth } from "../services.js";
+import type { PendingBid } from "./auction-detail.types.js";
 import { viewAuction } from "./auction-view.js";
 import { useAuth } from "./use-auth.js";
 import { useServerNow } from "./use-server-now.js";
-
-interface PendingBid {
-  amountMinor: string;
-  idempotencyKey: string;
-}
 
 export function AuctionDetail({ auctionId }: { auctionId: string }) {
   const { user } = useAuth();
@@ -48,15 +44,35 @@ export function AuctionDetail({ auctionId }: { auctionId: string }) {
 
   const live = useLiveAuctions([auctionId]);
   const serverNowMs = useServerNow(live.clockOffsetMs);
+  const view =
+    auction === undefined
+      ? undefined
+      : viewAuction(auction, live.entries.get(auctionId), serverNowMs);
+  const isEnded = view?.phase === "ended";
+
+  // The fetched row never refreshes by itself, and the stream may have no state
+  // for the auction (no bids yet, or the edge is down). Past its end time, read
+  // it again until the finalizer's closedAt shows up.
+  useEffect(() => {
+    if (!isEnded) {
+      return;
+    }
+    const timer = setInterval(() => {
+      auctionApi
+        .get(auctionId)
+        .then(setAuction)
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [isEnded, auctionId]);
 
   if (loadError !== undefined) {
     return <p className="error">{loadError}</p>;
   }
-  if (auction === undefined) {
+  if (auction === undefined || view === undefined) {
     return <p>Loading…</p>;
   }
 
-  const view = viewAuction(auction, live.entries.get(auctionId), serverNowMs);
   const countdown = view.phase === "open" ? formatCountdown(view.endsAt, serverNowMs) : undefined;
   const minimumNextBid = view.hasBid
     ? addMinor(view.priceMinor, auction.minimumBidIncrementMinor)

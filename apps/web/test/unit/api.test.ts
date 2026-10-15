@@ -56,7 +56,7 @@ describe("IdentityApi", () => {
 });
 
 describe("AuctionApi", () => {
-  it("reads auctions and live states without a token", async () => {
+  it("reads auctions without a token", async () => {
     const fetchFunction = fake();
     const api = new AuctionApi(new HttpClient("/auction", fetchFunction));
 
@@ -66,8 +66,6 @@ describe("AuctionApi", () => {
     await api.get("42");
     expect(lastCall(fetchFunction).url).toBe("/auction/v1/auctions/42");
 
-    await api.liveStates(["1", "2"]);
-    expect(lastCall(fetchFunction).url).toBe("/auction/v1/auctions/live-states?ids=1,2");
     expect(lastCall(fetchFunction).init.headers).not.toHaveProperty("authorization");
   });
 

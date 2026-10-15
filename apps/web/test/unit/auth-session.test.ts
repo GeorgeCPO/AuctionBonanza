@@ -99,6 +99,67 @@ describe("AuthSession", () => {
     expect(identity.refresh).toHaveBeenLastCalledWith("refresh-2");
   });
 
+  it("discards a refresh that finishes after sign-out", async () => {
+    let finishRefresh: (credentials: SessionCredentials) => void = () => {};
+    const { session, advance } = setup({
+      refresh: () =>
+        new Promise<SessionCredentials>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    });
+    await session.login("a@example.com", "pw");
+    advance(600_000);
+    const pending = session.getAccessToken();
+
+    await session.logout();
+    finishRefresh(credentials(2));
+
+    expect(await pending).toBeUndefined();
+    expect(session.getView().user).toBeNull();
+    expect(await session.getAccessToken()).toBeUndefined();
+  });
+
+  it("discards a refresh that finishes after a newer login", async () => {
+    let finishRefresh: (credentials: SessionCredentials) => void = () => {};
+    const { session, identity, advance } = setup({
+      refresh: () =>
+        new Promise<SessionCredentials>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    });
+    await session.login("a@example.com", "pw");
+    advance(600_000);
+    const pending = session.getAccessToken();
+    identity.login.mockResolvedValueOnce(credentials(7));
+    await session.login("b@example.com", "pw");
+
+    finishRefresh(credentials(2));
+    await pending;
+
+    expect(await session.getAccessToken()).toBe("access-7");
+  });
+
+  it("keeps a newer session when a stale refresh fails", async () => {
+    let failRefresh: (error: Error) => void = () => {};
+    const { session, identity, advance } = setup({
+      refresh: () =>
+        new Promise<SessionCredentials>((_resolve, reject) => {
+          failRefresh = reject;
+        }),
+    });
+    await session.login("a@example.com", "pw");
+    advance(600_000);
+    const pending = session.getAccessToken();
+    identity.login.mockResolvedValueOnce(credentials(7));
+    await session.login("b@example.com", "pw");
+
+    failRefresh(new Error("401"));
+    await pending;
+
+    expect(session.getView().user).not.toBeNull();
+    expect(await session.getAccessToken()).toBe("access-7");
+  });
+
   it("registers, then signs in", async () => {
     const { session, identity } = setup();
 

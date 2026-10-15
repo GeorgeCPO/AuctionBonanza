@@ -49,24 +49,6 @@ export interface LeadingBidJson {
   amountMinor: string;
 }
 
-export interface LiveStateJson {
-  auctionId: string;
-  auctionVersion: string;
-  currencyCode: string;
-  startsAt: string;
-  endsAt: string;
-  cancelledAt: string | null;
-  closedAt: string | null;
-  phase: AuctionPhase;
-  leadingBid: LeadingBidJson | null;
-}
-
-export interface LiveStatesJson {
-  items: LiveStateJson[];
-  missingIds: string[];
-  observedAt: string;
-}
-
 export interface CreateAuctionRequest {
   title: string;
   description: string;

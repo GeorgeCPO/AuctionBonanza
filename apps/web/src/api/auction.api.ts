@@ -2,7 +2,6 @@ import type {
   AuctionJson,
   AuctionListJson,
   CreateAuctionRequest,
-  LiveStatesJson,
   PlaceBidResponse,
 } from "./api.types.js";
 import { HttpClient } from "./http.js";
@@ -19,11 +18,6 @@ export class AuctionApi {
 
   get(auctionId: string): Promise<AuctionJson> {
     return this.http.request<AuctionJson>(`/v1/auctions/${encodeURIComponent(auctionId)}`);
-  }
-
-  liveStates(auctionIds: readonly string[]): Promise<LiveStatesJson> {
-    const ids = auctionIds.map(encodeURIComponent).join(",");
-    return this.http.request<LiveStatesJson>(`/v1/auctions/live-states?ids=${ids}`);
   }
 
   create(accessToken: string, request: CreateAuctionRequest): Promise<AuctionJson> {
