@@ -289,6 +289,21 @@ Each stream starts with one `snapshot` per auction (or `unavailable` for an
 auction that does not exist), then `bid-accepted` events; see
 [`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md#client-protocol).
 
+## Web UI
+
+`apps/web` is a barebones React UI for watching the backend work: sign in,
+browse auctions with live prices, bid, and see the raw event log. It is a view
+onto the services, not a product. With identity, auction-service, the outbox
+publisher, the relay and the edge running as above (and the finalizer, to see
+auctions close):
+
+```sh
+pnpm web:dev
+```
+
+Open <http://localhost:5173>. Design notes and limits are in
+[`docs/FRONTEND.md`](docs/FRONTEND.md).
+
 ## Load tool
 
 `tools/loadgen` is a Go tool for the scale scenarios in

@@ -1,0 +1,104 @@
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0;
+  color: #1c1c1e;
+  background: #fafafa;
+}
+header {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+  flex-wrap: wrap;
+}
+header nav {
+  flex: 1;
+}
+.brand {
+  font-weight: 700;
+  text-decoration: none;
+  color: inherit;
+}
+.auth {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+main {
+  max-width: 56rem;
+  margin: 1rem auto;
+  padding: 0 1rem;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  background: #fff;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #eee;
+}
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+dt {
+  color: #666;
+}
+dd {
+  margin: 0;
+}
+.price {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 24rem;
+}
+.stack label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.error {
+  color: #b00020;
+}
+.ok {
+  color: #1b7f3b;
+}
+.status {
+  font-size: 0.75rem;
+  font-weight: 400;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.5rem;
+  background: #eee;
+}
+.status-open {
+  background: #d6f5dd;
+}
+.status-reconnecting,
+.status-connecting {
+  background: #fff1c2;
+}
+.log {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  max-height: 16rem;
+  overflow: auto;
+  padding-left: 1rem;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #eee;
+}
+.log time {
+  color: #888;
+}
