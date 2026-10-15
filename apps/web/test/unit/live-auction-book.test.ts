@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { LiveAuctionBook } from "../../src/live/live-auction-book.js";
+import { bidAcceptedData, snapshotData } from "../support/live-fixtures.js";
 import type {
   BidAcceptedData,
   LiveEvent,
@@ -8,37 +9,11 @@ import type {
 } from "../../src/live/live-auction-book.types.js";
 
 function snapshot(overrides: Partial<SnapshotData> = {}): LiveEvent {
-  return {
-    kind: "snapshot",
-    data: {
-      auctionId: "1",
-      auctionVersion: "5",
-      phase: "open",
-      currencyCode: "USD",
-      startsAt: "2026-01-01T00:00:00.000Z",
-      endsAt: "2026-01-02T00:00:00.000Z",
-      cancelledAt: null,
-      closedAt: null,
-      leadingBid: { bidId: "10", amountMinor: "1000" },
-      serverTime: "2026-01-01T12:00:00.000Z",
-      ...overrides,
-    },
-  };
+  return { kind: "snapshot", data: snapshotData(overrides) };
 }
 
 function bid(overrides: Partial<BidAcceptedData> = {}): LiveEvent {
-  return {
-    kind: "bid-accepted",
-    data: {
-      auctionId: "1",
-      auctionVersion: "6",
-      bidId: "11",
-      amountMinor: "1100",
-      currencyCode: "USD",
-      occurredAt: "2026-01-01T12:00:01.000Z",
-      ...overrides,
-    },
-  };
+  return { kind: "bid-accepted", data: bidAcceptedData(overrides) };
 }
 
 function leadingAmount(book: LiveAuctionBook, auctionId = "1"): string | undefined {

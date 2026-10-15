@@ -20,21 +20,17 @@ function lastCall(fetchFunction: ReturnType<typeof fake>): { url: string; init: 
 }
 
 describe("IdentityApi", () => {
-  it("registers with an optional username", async () => {
+  it("registers with email and password", async () => {
     const fetchFunction = fake(201);
     const api = new IdentityApi(new HttpClient("/identity", fetchFunction));
 
     await api.register("a@example.com", "a-long-password");
+
+    expect(lastCall(fetchFunction).url).toBe("/identity/v1/users");
     expect(JSON.parse(lastCall(fetchFunction).init.body as string)).toEqual({
       email: "a@example.com",
       password: "a-long-password",
     });
-
-    await api.register("a@example.com", "a-long-password", "ann");
-    expect(JSON.parse(lastCall(fetchFunction).init.body as string)).toMatchObject({
-      username: "ann",
-    });
-    expect(lastCall(fetchFunction).url).toBe("/identity/v1/users");
   });
 
   it("logs in, refreshes and logs out", async () => {

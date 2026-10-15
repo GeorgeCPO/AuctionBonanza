@@ -6,12 +6,8 @@ import { HttpClient } from "./http.js";
 export class IdentityApi {
   constructor(private readonly http: HttpClient = new HttpClient("/identity")) {}
 
-  register(email: string, password: string, username?: string): Promise<UserJson> {
-    const body =
-      username === undefined || username === ""
-        ? { email, password }
-        : { email, password, username };
-    return this.http.request<UserJson>("/v1/users", { method: "POST", body });
+  register(email: string, password: string): Promise<UserJson> {
+    return this.http.request<UserJson>("/v1/users", { method: "POST", body: { email, password } });
   }
 
   login(email: string, password: string): Promise<SessionCredentials> {

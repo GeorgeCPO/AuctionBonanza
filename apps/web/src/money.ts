@@ -35,8 +35,7 @@ export function parseMajorToMinor(input: string): string | undefined {
   return minor;
 }
 
-// The lowest bid the form can suggest: the current price plus the increment,
-// or the starting price when nobody has bid.
+// The exact sum of two minor-unit amounts.
 export function addMinor(a: string, b: string): string {
   return (BigInt(a) + BigInt(b)).toString();
 }

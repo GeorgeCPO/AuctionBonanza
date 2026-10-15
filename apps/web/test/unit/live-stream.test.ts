@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LiveStream } from "../../src/live/live-stream.js";
 import type { EventSourceLike } from "../../src/live/live-stream.types.js";
+import { bidAcceptedData, snapshotData } from "../support/live-fixtures.js";
 
 class FakeEventSource implements EventSourceLike {
   onopen: ((event: Event) => void) | null = null;
@@ -33,18 +34,7 @@ class FakeEventSource implements EventSourceLike {
 }
 
 function snapshotJson(auctionId: string, version: string): string {
-  return JSON.stringify({
-    auctionId,
-    auctionVersion: version,
-    phase: "open",
-    currencyCode: "USD",
-    startsAt: "2026-01-01T00:00:00.000Z",
-    endsAt: "2026-01-02T00:00:00.000Z",
-    cancelledAt: null,
-    closedAt: null,
-    leadingBid: null,
-    serverTime: "2026-01-01T12:00:00.000Z",
-  });
+  return JSON.stringify(snapshotData({ auctionId, auctionVersion: version, leadingBid: null }));
 }
 
 function setup() {
@@ -119,17 +109,7 @@ describe("LiveStream", () => {
     sources[0]?.open();
 
     sources[0]?.emit("snapshot", snapshotJson("1", "1"));
-    sources[0]?.emit(
-      "bid-accepted",
-      JSON.stringify({
-        auctionId: "1",
-        auctionVersion: "2",
-        bidId: "9",
-        amountMinor: "1100",
-        currencyCode: "USD",
-        occurredAt: "2026-01-01T12:00:01.000Z",
-      }),
-    );
+    sources[0]?.emit("bid-accepted", JSON.stringify(bidAcceptedData({ auctionVersion: "2" })));
 
     const view = stream.getView();
     expect(view.status).toBe("open");

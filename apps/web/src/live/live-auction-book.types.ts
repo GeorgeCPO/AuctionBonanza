@@ -34,9 +34,7 @@ export type LiveEvent =
   | { kind: "unavailable"; data: UnavailableData };
 
 export interface LiveAuction {
-  auctionId: string;
   version: string;
-  phase: AuctionPhase;
   currencyCode: string;
   startsAt: string;
   endsAt: string;

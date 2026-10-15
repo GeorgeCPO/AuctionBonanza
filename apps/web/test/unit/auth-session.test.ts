@@ -36,6 +36,30 @@ function setup(overrides: Partial<IdentityPort> = {}) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+// Signs in, lets the access token expire, starts a refresh that stays pending,
+// then signs in as someone else. Returns the pending token request in an object,
+// because returning the promise itself from an async function would wait for it.
+async function startRefreshThenLoginAgain(
+  harness: ReturnType<typeof setup>,
+): Promise<{ pending: Promise<string | undefined> }> {
+  await harness.session.login("a@example.com", "pw");
+  harness.advance(600_000);
+  const pending = harness.session.getAccessToken();
+  harness.identity.login.mockResolvedValueOnce(credentials(7));
+  await harness.session.login("b@example.com", "pw");
+  return { pending };
+}
+
 describe("AuthSession", () => {
   it("has no token before signing in", async () => {
     const { session } = setup();
@@ -100,19 +124,14 @@ describe("AuthSession", () => {
   });
 
   it("discards a refresh that finishes after sign-out", async () => {
-    let finishRefresh: (credentials: SessionCredentials) => void = () => {};
-    const { session, advance } = setup({
-      refresh: () =>
-        new Promise<SessionCredentials>((resolve) => {
-          finishRefresh = resolve;
-        }),
-    });
+    const refresh = deferred<SessionCredentials>();
+    const { session, advance } = setup({ refresh: () => refresh.promise });
     await session.login("a@example.com", "pw");
     advance(600_000);
     const pending = session.getAccessToken();
 
     await session.logout();
-    finishRefresh(credentials(2));
+    refresh.resolve(credentials(2));
 
     expect(await pending).toBeUndefined();
     expect(session.getView().user).toBeNull();
@@ -120,44 +139,26 @@ describe("AuthSession", () => {
   });
 
   it("discards a refresh that finishes after a newer login", async () => {
-    let finishRefresh: (credentials: SessionCredentials) => void = () => {};
-    const { session, identity, advance } = setup({
-      refresh: () =>
-        new Promise<SessionCredentials>((resolve) => {
-          finishRefresh = resolve;
-        }),
-    });
-    await session.login("a@example.com", "pw");
-    advance(600_000);
-    const pending = session.getAccessToken();
-    identity.login.mockResolvedValueOnce(credentials(7));
-    await session.login("b@example.com", "pw");
+    const refresh = deferred<SessionCredentials>();
+    const harness = setup({ refresh: () => refresh.promise });
+    const { pending } = await startRefreshThenLoginAgain(harness);
 
-    finishRefresh(credentials(2));
+    refresh.resolve(credentials(2));
     await pending;
 
-    expect(await session.getAccessToken()).toBe("access-7");
+    expect(await harness.session.getAccessToken()).toBe("access-7");
   });
 
   it("keeps a newer session when a stale refresh fails", async () => {
-    let failRefresh: (error: Error) => void = () => {};
-    const { session, identity, advance } = setup({
-      refresh: () =>
-        new Promise<SessionCredentials>((_resolve, reject) => {
-          failRefresh = reject;
-        }),
-    });
-    await session.login("a@example.com", "pw");
-    advance(600_000);
-    const pending = session.getAccessToken();
-    identity.login.mockResolvedValueOnce(credentials(7));
-    await session.login("b@example.com", "pw");
+    const refresh = deferred<SessionCredentials>();
+    const harness = setup({ refresh: () => refresh.promise });
+    const { pending } = await startRefreshThenLoginAgain(harness);
 
-    failRefresh(new Error("401"));
+    refresh.reject(new Error("401"));
     await pending;
 
-    expect(session.getView().user).not.toBeNull();
-    expect(await session.getAccessToken()).toBe("access-7");
+    expect(harness.session.getView().user).not.toBeNull();
+    expect(await harness.session.getAccessToken()).toBe("access-7");
   });
 
   it("registers, then signs in", async () => {
@@ -165,7 +166,7 @@ describe("AuthSession", () => {
 
     await session.register("a@example.com", "a-long-password");
 
-    expect(identity.register).toHaveBeenCalledWith("a@example.com", "a-long-password", undefined);
+    expect(identity.register).toHaveBeenCalledWith("a@example.com", "a-long-password");
     expect(identity.login).toHaveBeenCalledWith("a@example.com", "a-long-password");
     expect(session.getView().user).not.toBeNull();
   });

@@ -1,5 +1,5 @@
 import type { SessionCredentials } from "../api/api.types.js";
-import type { AuthSessionOptions, AuthView } from "./auth-session.types.js";
+import type { AuthSessionOptions, AuthView, IdentityPort } from "./auth-session.types.js";
 
 const DEFAULT_REFRESH_LEEWAY_MS = 30_000;
 
@@ -15,10 +15,12 @@ export class AuthSession {
   private refreshInFlight: Promise<string | undefined> | undefined;
   private view: AuthView = { user: null };
   private readonly listeners = new Set<() => void>();
+  private readonly identity: IdentityPort;
   private readonly now: () => number;
   private readonly refreshLeewayMs: number;
 
-  constructor(private readonly options: AuthSessionOptions) {
+  constructor(options: AuthSessionOptions) {
+    this.identity = options.identity;
     this.now = options.now ?? (() => Date.now());
     this.refreshLeewayMs = options.refreshLeewayMs ?? DEFAULT_REFRESH_LEEWAY_MS;
   }
@@ -34,12 +36,12 @@ export class AuthSession {
   getView = (): AuthView => this.view;
 
   async login(email: string, password: string): Promise<void> {
-    const credentials = await this.options.identity.login(email, password);
+    const credentials = await this.identity.login(email, password);
     this.setCredentials(credentials);
   }
 
-  async register(email: string, password: string, username?: string): Promise<void> {
-    await this.options.identity.register(email, password, username);
+  async register(email: string, password: string): Promise<void> {
+    await this.identity.register(email, password);
     await this.login(email, password);
   }
 
@@ -50,7 +52,7 @@ export class AuthSession {
       return;
     }
     // Best effort: the session is already gone locally either way.
-    await this.options.identity.logout(current.accessToken, current.refreshToken).catch(() => {});
+    await this.identity.logout(current.accessToken, current.refreshToken).catch(() => {});
   }
 
   // Resolves to a token that is valid now, or undefined when there is no
@@ -76,7 +78,7 @@ export class AuthSession {
     // while it is in flight, its result is stale and must not replace theirs.
     const started = this.credentials;
     try {
-      const credentials = await this.options.identity.refresh(refreshToken);
+      const credentials = await this.identity.refresh(refreshToken);
       if (this.credentials !== started) {
         return undefined;
       }
@@ -101,7 +103,6 @@ export class AuthSession {
 
   private clear(): void {
     this.credentials = undefined;
-    this.accessExpiresAtMs = 0;
     this.publish({ user: null });
   }
 

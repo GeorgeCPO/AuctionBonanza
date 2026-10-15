@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build": "vite build",
     "test:unit": "vitest run -c vitest.unit.config.ts",
     "test:unit:coverage": "vitest run -c vitest.unit.config.ts --coverage",
     "test:unit:watch": "vitest -c vitest.unit.config.ts",

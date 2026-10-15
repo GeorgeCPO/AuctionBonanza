@@ -3,12 +3,14 @@ import { useState } from "react";
 import { describeError } from "../error-messages.js";
 import { parseMajorToMinor } from "../money.js";
 import { auctionApi, auth } from "../services.js";
+import { formatRoute } from "./route.js";
 import { useAuth } from "./use-auth.js";
 
 // The service rejects auctions shorter than a minute, measured when the request
 // arrives, so the shortest preset keeps a margin above that.
+const DEFAULT_DURATION_MS = 2 * 60_000;
 const DURATIONS: readonly { label: string; ms: number }[] = [
-  { label: "2 minutes", ms: 2 * 60_000 },
+  { label: "2 minutes", ms: DEFAULT_DURATION_MS },
   { label: "5 minutes", ms: 5 * 60_000 },
   { label: "1 hour", ms: 60 * 60_000 },
   { label: "1 day", ms: 24 * 60 * 60_000 },
@@ -19,7 +21,7 @@ export function CreateAuctionForm() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [currencyCode, setCurrencyCode] = useState("USD");
-  const [durationMs, setDurationMs] = useState(DURATIONS[0]?.ms ?? 2 * 60_000);
+  const [durationMs, setDurationMs] = useState(DEFAULT_DURATION_MS);
   const [startingPrice, setStartingPrice] = useState("10.00");
   const [increment, setIncrement] = useState("1.00");
   const [error, setError] = useState<string | undefined>();
@@ -48,7 +50,7 @@ export function CreateAuctionForm() {
         startingPriceMinor,
         minimumBidIncrementMinor,
       });
-      window.location.hash = `#/auctions/${created.id}`;
+      window.location.hash = formatRoute({ name: "auction", auctionId: created.id });
     } catch (caught) {
       setError(describeError(caught));
     } finally {

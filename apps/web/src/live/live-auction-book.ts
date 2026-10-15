@@ -67,9 +67,7 @@ export class LiveAuctionBook {
 
   private fromSnapshot(data: SnapshotData): LiveAuction {
     return {
-      auctionId: data.auctionId,
       version: data.auctionVersion,
-      phase: data.phase,
       currencyCode: data.currencyCode,
       startsAt: data.startsAt,
       endsAt: data.endsAt,

@@ -4,7 +4,7 @@ import { AuctionDetail } from "./AuctionDetail.js";
 import { AuctionList } from "./AuctionList.js";
 import { AuthPanel } from "./AuthPanel.js";
 import { CreateAuctionForm } from "./CreateAuctionForm.js";
-import { parseRoute } from "./route.js";
+import { formatRoute, parseRoute } from "./route.js";
 import { useAuth } from "./use-auth.js";
 
 function subscribeToHash(listener: () => void): () => void {
@@ -20,10 +20,10 @@ export function App() {
   return (
     <>
       <header>
-        <a href="#/" className="brand">
+        <a href={formatRoute({ name: "list" })} className="brand">
           Auction Bonanza
         </a>
-        <nav>{user !== null && <a href="#/new">New auction</a>}</nav>
+        <nav>{user !== null && <a href={formatRoute({ name: "new" })}>New auction</a>}</nav>
         <AuthPanel />
       </header>
       <main>

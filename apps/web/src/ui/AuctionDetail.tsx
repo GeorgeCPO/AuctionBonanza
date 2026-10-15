@@ -1,46 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { AuctionJson } from "../api/api.types.js";
 import { describeError } from "../error-messages.js";
-import { formatCountdown } from "../live/phase.js";
 import { useLiveAuctions } from "../live/use-live-auctions.js";
 import { addMinor, formatMinor, formatMoney, parseMajorToMinor } from "../money.js";
 import { auctionApi, auth } from "../services.js";
-import type { PendingBid } from "./auction-detail.types.js";
+import type { BidResult, PendingBid } from "./auction-detail.types.js";
 import { viewAuction } from "./auction-view.js";
+import { StreamStatusBadge } from "./StreamStatusBadge.js";
 import { useAuth } from "./use-auth.js";
+import { useLoaded } from "./use-loaded.js";
 import { useServerNow } from "./use-server-now.js";
 
 export function AuctionDetail({ auctionId }: { auctionId: string }) {
   const { user } = useAuth();
-  const [auction, setAuction] = useState<AuctionJson | undefined>();
-  const [loadError, setLoadError] = useState<string | undefined>();
+  const {
+    data: auction,
+    error: loadError,
+    reload,
+  } = useLoaded(() => auctionApi.get(auctionId), [auctionId]);
   const [amount, setAmount] = useState("");
-  const [bidMessage, setBidMessage] = useState<string | undefined>();
-  const [bidFailed, setBidFailed] = useState(false);
+  const [bidResult, setBidResult] = useState<BidResult | undefined>();
   const [busy, setBusy] = useState(false);
   // The idempotency key of the bid being attempted. Resending the same amount
   // reuses it, so a retry after a lost response cannot place a second bid.
   const pendingBid = useRef<PendingBid | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    auctionApi
-      .get(auctionId)
-      .then((loaded) => {
-        if (!cancelled) {
-          setAuction(loaded);
-        }
-      })
-      .catch((caught: unknown) => {
-        if (!cancelled) {
-          setLoadError(describeError(caught));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [auctionId]);
 
   const live = useLiveAuctions([auctionId]);
   const serverNowMs = useServerNow(live.clockOffsetMs);
@@ -50,54 +33,42 @@ export function AuctionDetail({ auctionId }: { auctionId: string }) {
       : viewAuction(auction, live.entries.get(auctionId), serverNowMs);
   const isEnded = view?.phase === "ended";
 
-  // The fetched row never refreshes by itself, and the stream may have no state
-  // for the auction (no bids yet, or the edge is down). Past its end time, read
-  // it again until the finalizer's closedAt shows up.
+  // The stream sends no event when the finalizer closes an auction. Past its
+  // end time, read the row again until its closedAt shows up.
   useEffect(() => {
     if (!isEnded) {
       return;
     }
-    const timer = setInterval(() => {
-      auctionApi
-        .get(auctionId)
-        .then(setAuction)
-        .catch(() => {});
-    }, 3000);
+    const timer = setInterval(reload, 3000);
     return () => clearInterval(timer);
-  }, [isEnded, auctionId]);
+  }, [isEnded, reload]);
 
-  if (loadError !== undefined) {
+  if (loadError !== undefined && auction === undefined) {
     return <p className="error">{loadError}</p>;
   }
   if (auction === undefined || view === undefined) {
     return <p>Loading…</p>;
   }
 
-  const countdown = view.phase === "open" ? formatCountdown(view.endsAt, serverNowMs) : undefined;
   const minimumNextBid = view.hasBid
     ? addMinor(view.priceMinor, auction.minimumBidIncrementMinor)
     : view.priceMinor;
-  const lines = live.log.filter(
-    (line) => line.auctionId === auctionId || line.auctionId === undefined,
-  );
 
   async function placeBid(): Promise<void> {
     const amountMinor = parseMajorToMinor(amount);
     if (amountMinor === undefined) {
-      setBidFailed(true);
-      setBidMessage("Enter an amount like 12.50.");
+      setBidResult({ ok: false, text: "Enter an amount like 12.50." });
       return;
     }
     if (pendingBid.current?.amountMinor !== amountMinor) {
       pendingBid.current = { amountMinor, idempotencyKey: crypto.randomUUID() };
     }
     setBusy(true);
-    setBidMessage(undefined);
+    setBidResult(undefined);
     try {
       const accessToken = await auth.getAccessToken();
       if (accessToken === undefined) {
-        setBidFailed(true);
-        setBidMessage("Sign in to bid.");
+        setBidResult({ ok: false, text: "Sign in to bid." });
         return;
       }
       const placed = await auctionApi.placeBid(
@@ -107,12 +78,13 @@ export function AuctionDetail({ auctionId }: { auctionId: string }) {
         pendingBid.current.idempotencyKey,
       );
       pendingBid.current = undefined;
-      setBidFailed(false);
-      setBidMessage(`Bid ${placed.bid.id} accepted at ${formatMinor(placed.bid.amountMinor)}.`);
+      setBidResult({
+        ok: true,
+        text: `Bid ${placed.bid.id} accepted at ${formatMinor(placed.bid.amountMinor)}.`,
+      });
     } catch (caught) {
       // A rejected bid keeps its key: sending the same amount again is a retry.
-      setBidFailed(true);
-      setBidMessage(describeError(caught));
+      setBidResult({ ok: false, text: describeError(caught) });
     } finally {
       setBusy(false);
     }
@@ -121,8 +93,7 @@ export function AuctionDetail({ auctionId }: { auctionId: string }) {
   return (
     <section>
       <h2>
-        {auction.title}{" "}
-        <span className={`status status-${live.status}`}>stream: {live.status}</span>
+        {auction.title} <StreamStatusBadge status={live.status} />
       </h2>
       <p>{auction.description}</p>
       <dl>
@@ -131,7 +102,7 @@ export function AuctionDetail({ auctionId }: { auctionId: string }) {
         <dt>{view.hasBid ? "Leading bid" : "Starting price"}</dt>
         <dd className="price">{formatMoney(view.priceMinor, view.currencyCode)}</dd>
         <dt>Time left</dt>
-        <dd>{countdown ?? "–"}</dd>
+        <dd>{view.countdown ?? "–"}</dd>
         <dt>Version</dt>
         <dd>{view.version ?? "–"}</dd>
         <dt>Increment</dt>
@@ -161,13 +132,15 @@ export function AuctionDetail({ auctionId }: { auctionId: string }) {
           <button type="submit" disabled={busy}>
             Place bid
           </button>
-          {bidMessage !== undefined && <p className={bidFailed ? "error" : "ok"}>{bidMessage}</p>}
+          {bidResult !== undefined && (
+            <p className={bidResult.ok ? "ok" : "error"}>{bidResult.text}</p>
+          )}
         </form>
       )}
 
       <h3>Stream log</h3>
       <ul className="log">
-        {lines.map((line) => (
+        {live.log.map((line) => (
           <li key={line.id}>
             <time>{line.receivedAt}</time> {line.text}
           </li>

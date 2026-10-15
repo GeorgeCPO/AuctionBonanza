@@ -17,6 +17,7 @@ export default defineConfig({
         "src/money.ts",
         "src/error-messages.ts",
         "src/ui/route.ts",
+        "src/ui/auction-view.ts",
       ],
       exclude: ["src/**/*.types.ts"],
       reporter: ["text", "html", "lcov"],

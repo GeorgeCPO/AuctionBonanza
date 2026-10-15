@@ -6,6 +6,7 @@ export interface AuctionView {
   priceMinor: string;
   hasBid: boolean;
   currencyCode: string;
-  endsAt: string;
+  // Time left while the auction is open; undefined otherwise.
+  countdown: string | undefined;
   version: string | undefined;
 }

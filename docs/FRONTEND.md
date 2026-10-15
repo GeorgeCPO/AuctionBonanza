@@ -32,7 +32,7 @@ proxy; that is a later decision.
   and sending one twice would look like theft and revoke the session. Any
   failed refresh, including a lost response, ends the session, because the
   client cannot tell whether the token was consumed.
-- **Live data comes from the SSE stream alone.** `LiveStream`
+- **Price, leading bid and version come from the SSE stream.** `LiveStream`
   (`src/live/live-stream.ts`) opens one `EventSource` for the visible auctions.
   The set is fixed per connection, so changing it reconnects. Rules from
   [`REALTIME_GATEWAY.md`](REALTIME_GATEWAY.md#client-protocol), in
@@ -40,6 +40,11 @@ proxy; that is a later decision.
   event applies only if its version is greater (compared as `BigInt`). On a
   dropped stream the client reconnects with backoff, and the fresh snapshots
   replace what was shown, so it needs no gap handling.
+- **Closing is not on the stream.** The gateway sends no event when the
+  finalizer closes an auction (`phase` is only as of the last read), so a
+  snapshot can predate `closedAt`. `viewAuction` (`src/ui/auction-view.ts`)
+  therefore also reads `closedAt` and `cancelledAt` from the HTTP row, and the
+  detail page re-reads that row every 3 seconds while the phase is `ended`.
 - **Time comes from the server.** Each snapshot carries `serverTime`; the
   countdown uses the offset from the local clock. The displayed phase is derived
   from `startsAt`, `endsAt`, `closedAt` and `cancelledAt` (`src/live/phase.ts`),
@@ -58,6 +63,8 @@ proxy; that is a later decision.
   endpoints for them (settlement has no HTTP API).
 - Streams are unauthenticated, matching the edge today.
 - Only the first page of auctions (20) is shown.
+- The list does not refresh `closed` or `cancelled` until "Reload list"; only
+  the detail page polls for it.
 
 ## Testing
 

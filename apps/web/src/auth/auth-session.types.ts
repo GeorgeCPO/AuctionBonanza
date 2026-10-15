@@ -3,7 +3,7 @@ import type { SessionCredentials, UserJson } from "../api/api.types.js";
 // The identity calls AuthSession needs. IdentityApi satisfies it; tests pass a
 // fake.
 export interface IdentityPort {
-  register(email: string, password: string, username?: string): Promise<UserJson>;
+  register(email: string, password: string): Promise<UserJson>;
   login(email: string, password: string): Promise<SessionCredentials>;
   refresh(refreshToken: string): Promise<SessionCredentials>;
   logout(accessToken: string, refreshToken: string): Promise<void>;

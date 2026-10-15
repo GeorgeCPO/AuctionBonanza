@@ -1,5 +1,4 @@
-import { useRef, useState } from "react";
-import type { FormEvent } from "react";
+import { useState } from "react";
 
 import { describeError } from "../error-messages.js";
 import { auth } from "../services.js";
@@ -11,7 +10,6 @@ export function AuthPanel() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
-  const formRef = useRef<HTMLFormElement>(null);
 
   async function submit(mode: "login" | "register"): Promise<void> {
     setBusy(true);
@@ -43,11 +41,13 @@ export function AuthPanel() {
 
   return (
     <form
-      ref={formRef}
       className="auth"
-      onSubmit={(event: FormEvent) => {
+      onSubmit={(event) => {
         event.preventDefault();
-        void submit("login");
+        // The submit button that was pressed says which action to run, and the
+        // browser has already validated the fields for either.
+        const submitter = (event.nativeEvent as SubmitEvent).submitter;
+        void submit(submitter?.getAttribute("value") === "register" ? "register" : "login");
       }}
     >
       <input
@@ -65,20 +65,10 @@ export function AuthPanel() {
         minLength={12}
         required
       />
-      <button type="submit" disabled={busy}>
+      <button type="submit" value="login" disabled={busy}>
         Sign in
       </button>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => {
-          // A type="button" skips the form's own validation, so run it here.
-          const isValid = formRef.current?.reportValidity() ?? false;
-          if (isValid) {
-            void submit("register");
-          }
-        }}
-      >
+      <button type="submit" value="register" disabled={busy}>
         Register
       </button>
       {error !== undefined && <span className="error">{error}</span>}

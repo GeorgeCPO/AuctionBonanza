@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseRoute } from "../../src/ui/route.js";
+import { formatRoute, parseRoute } from "../../src/ui/route.js";
 
 describe("parseRoute", () => {
   it.each([
@@ -13,4 +13,13 @@ describe("parseRoute", () => {
   ])("parses %j", (hash, expected) => {
     expect(parseRoute(hash)).toEqual(expected);
   });
+});
+
+describe("formatRoute", () => {
+  it.each([{ name: "list" }, { name: "new" }, { name: "auction", auctionId: "42" }] as const)(
+    "round-trips %j through parseRoute",
+    (route) => {
+      expect(parseRoute(formatRoute(route))).toEqual(route);
+    },
+  );
 });

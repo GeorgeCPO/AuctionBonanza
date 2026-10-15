@@ -1,5 +1,5 @@
 import { LiveAuctionBook } from "./live-auction-book.js";
-import type { LiveEvent } from "./live-auction-book.types.js";
+import type { ApplyOutcome, LiveEvent } from "./live-auction-book.types.js";
 import type {
   EventSourceFactory,
   EventSourceLike,
@@ -11,7 +11,7 @@ import type {
 const MAX_LOG_LINES = 100;
 const FIRST_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 15_000;
-// `snapshot` and `bid-accepted` are the SSE event names the gateway sends.
+// The SSE event names the gateway sends.
 const EVENT_NAMES = ["snapshot", "bid-accepted", "unavailable"] as const;
 
 // One SSE connection to the gateway for a set of auctions. The set is fixed
@@ -56,20 +56,20 @@ export class LiveStream {
     this.retryDelayMs = FIRST_RETRY_MS;
     this.disconnect();
     this.book.retain(new Set(next));
-    this.update({ entries: this.book.entriesSnapshot() });
-    if (next.length === 0) {
-      this.update({ status: "idle" });
-      return;
+    this.update({
+      entries: this.book.entriesSnapshot(),
+      status: next.length === 0 ? "idle" : "connecting",
+    });
+    if (next.length > 0) {
+      this.connect();
     }
-    this.connect("connecting");
   }
 
   close(): void {
     this.watch([]);
   }
 
-  private connect(status: "connecting" | "reconnecting"): void {
-    this.update({ status });
+  private connect(): void {
     const source = this.createEventSource(`/gateway/v1/stream?auctions=${this.ids.join(",")}`);
     this.source = source;
     source.onopen = () => {
@@ -80,8 +80,8 @@ export class LiveStream {
       // EventSource would retry by itself, but not after an HTTP error, and
       // not with a delay we control. Close it and reconnect on our own.
       this.disconnect();
-      this.log(undefined, `stream lost, retrying in ${this.retryDelayMs / 1000}s`);
-      this.retryTimer = setTimeout(() => this.connect("reconnecting"), this.retryDelayMs);
+      this.log(`stream lost, retrying in ${this.retryDelayMs / 1000}s`);
+      this.retryTimer = setTimeout(() => this.connect(), this.retryDelayMs);
       this.retryDelayMs = Math.min(this.retryDelayMs * 2, MAX_RETRY_MS);
       this.update({ status: "reconnecting" });
     };
@@ -103,12 +103,12 @@ export class LiveStream {
     }
   }
 
-  private handleFrame(name: (typeof EVENT_NAMES)[number], raw: string): void {
+  private handleFrame(name: LiveEvent["kind"], raw: string): void {
     let data: unknown;
     try {
       data = JSON.parse(raw);
     } catch {
-      this.log(undefined, `unreadable ${name} frame`);
+      this.log(`unreadable ${name} frame`);
       return;
     }
     const hasAuctionId =
@@ -116,12 +116,12 @@ export class LiveStream {
       data !== null &&
       typeof (data as { auctionId?: unknown }).auctionId === "string";
     if (!hasAuctionId) {
-      this.log(undefined, `unreadable ${name} frame`);
+      this.log(`unreadable ${name} frame`);
       return;
     }
     const event = { kind: name, data } as LiveEvent;
     const outcome = this.book.apply(event);
-    this.log(event.data.auctionId, this.describe(event, outcome));
+    this.log(this.describe(event, outcome));
 
     let clockOffsetMs = this.view.clockOffsetMs;
     if (event.kind === "snapshot") {
@@ -130,7 +130,7 @@ export class LiveStream {
     this.update({ entries: this.book.entriesSnapshot(), clockOffsetMs });
   }
 
-  private describe(event: LiveEvent, outcome: string): string {
+  private describe(event: LiveEvent, outcome: ApplyOutcome): string {
     switch (event.kind) {
       case "snapshot":
         return `snapshot v${event.data.auctionVersion} ${event.data.phase}`;
@@ -141,15 +141,14 @@ export class LiveStream {
     }
   }
 
-  private log(auctionId: string | undefined, text: string): void {
+  private log(text: string): void {
     const line: LogLine = {
       id: this.nextLogId,
       receivedAt: new Date(this.now()).toLocaleTimeString(),
-      auctionId,
       text,
     };
     this.nextLogId += 1;
-    this.view = { ...this.view, log: [line, ...this.view.log].slice(0, MAX_LOG_LINES) };
+    this.update({ log: [line, ...this.view.log].slice(0, MAX_LOG_LINES) });
   }
 
   private update(change: Partial<LiveView>): void {

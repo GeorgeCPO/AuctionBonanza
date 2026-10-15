@@ -6,7 +6,6 @@ export interface LogLine {
   id: number;
   // Local wall-clock time the frame arrived.
   receivedAt: string;
-  auctionId: string | undefined;
   text: string;
 }
 
