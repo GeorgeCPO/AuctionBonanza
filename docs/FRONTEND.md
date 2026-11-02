@@ -73,7 +73,7 @@ phase, routing, error messages) has unit tests in `apps/web/test/unit`, run by
 `pnpm test:unit` and gated by coverage thresholds like the services. The React
 components and the live connection have no automated tests; check them by hand:
 
-1. Start the stack as in the README and run `pnpm web:dev`.
+1. Start the stack as in the README ([Run it locally](../README.md#run-it-locally)); `pnpm web:dev` starts the UI.
 2. In two browser windows, register two users; create a 2-minute auction in one.
 3. Bid from the other: the price, leading bid and version update live in both.
 4. Bid too low, and bid on your own auction: the error text appears.

@@ -1,317 +1,273 @@
 # Auction Bonanza
 
-Real-time auction platform
+A real-time auction backend, built to make Kafka, PostgreSQL, consistency and
+failure-recovery behavior understandable and documented.
 
-Users register, create auctions, place bids, and watch prices update live. When an auction ends it is closed, the winning bid is recorded, and an order is created for the winner. Automatic (max) bidding and payment are planned.
+Users register, create auctions, place bids and watch prices update live. When an
+auction ends it is closed, the winning bid is recorded and an order is created
+for the winner.
 
-## Description
+The point of the project is not only that it works, but that the reasons it
+keeps working are written down: what happens when a message is delivered twice,
+a consumer crashes mid-message, or a broker disappears. [`ACCEPTANCE.md`](ACCEPTANCE.md)
+is the roadmap of such failure and scale scenarios.
 
-A backend for live auctions, built as small services that share one PostgreSQL database (`auction_db`) and exchange events through Kafka:
+**Status:** registration and sign-in, auctions and idempotent bidding, live
+updates over SSE, auction finalization, and order creation are implemented.
+Automatic (max) bidding, payment and the AWS deployment are planned.
 
-- **identity-service**: registration, sign-in, short-lived access tokens, and rotating refresh tokens.
-- **auction-service**: the auction lifecycle and idempotent bid acceptance in PostgreSQL transactions. A transactional outbox publishes `BidAccepted` events to Kafka, and a finalizer closes ended auctions and records the winner.
-- **realtime-gateway**: a relay from Kafka to Valkey, and an SSE edge that sends each client a snapshot followed by live bid events.
-- **settlement-service**: consumes `AuctionClosed` events and creates one order per sold auction.
-- **apps/web**: a minimal web UI for watching prices update and placing bids.
-- **tools/loadgen**: a Go load tool that seeds users and auctions and samples PostgreSQL and Kafka.
+## Contents
 
-Message delivery is treated as potentially duplicated, handlers are idempotent, and auction, winner and order invariants are protected by database constraints and transactions. How each component behaves and recovers is documented under [`docs/`](docs/). [`ACCEPTANCE.md`](ACCEPTANCE.md) is the roadmap of failure and scale scenarios the system is meant to handle.
+- [How it works](#how-it-works)
+- [Run it locally](#run-it-locally)
+- [Repository layout](#repository-layout)
+- [Development](#development)
+- [Documentation](#documentation)
 
-## Tech stack
+## How it works
 
-- Node.js
-- TypeScript
-- PostgreSQL
-- Kafka
-- AWS stack
-- Open for extension
+The system is a handful of small services in one monorepo. They share one
+PostgreSQL database (`auction_db`) and communicate through Kafka events.
 
-## Local foundation
+```text
+Browser (apps/web)
+  |-- HTTP --> identity-service            sign-in, tokens
+  |-- HTTP --> auction-service ----------> PostgreSQL (auction_db)
+  |                 |                          |
+  |                 |   bid + auction update + outbox row
+  |                 |   commit in ONE transaction
+  |                 v
+  |          outbox publisher --> Kafka (auction.events)
+  |                                  |            |
+  |                                  |            `--> settlement-service --> orders (PostgreSQL)
+  |                                  v
+  |                           realtime relay --> Valkey pub/sub
+  |                                                    |
+  `<-- SSE: snapshot, then live bids -- realtime edge -'
+```
 
-Prerequisites are Node.js 24.20.0, pnpm 11.25.0, Docker with Compose, and
-PostgreSQL client tools containing `pg_dump` 18.x for schema snapshots (or use
-the container's `pg_dump`, see [Continuous integration](#continuous-integration)).
+| Component                     | Responsibility                                                                                                                          | Port |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `identity-service`            | Registration, sign-in, short-lived access tokens (ES256 JWT) and rotating single-use refresh tokens.                                    | 3001 |
+| `auction-service` (API)       | Auction lifecycle and idempotent bid acceptance inside PostgreSQL transactions.                                                         | 3002 |
+| `auction-service` (outbox)    | A separate worker that publishes `BidAccepted` and `AuctionClosed` events from the transactional outbox to Kafka, in order per auction. | n/a  |
+| `auction-service` (finalizer) | A separate worker that closes ended auctions and records the winning bid (or no winner).                                                | n/a  |
+| `settlement-service`          | Consumes `AuctionClosed` and creates exactly one order per sold auction. Unprocessable records go to a dead-letter topic. No HTTP API.  | n/a  |
+| `realtime-gateway` (relay)    | Forwards Kafka events to Valkey, one sharded channel per auction.                                                                       | n/a  |
+| `realtime-gateway` (edge)     | Serves Server-Sent Events: a snapshot per auction, then live `bid-accepted` events. Repairs gaps by resyncing from `auction-service`.   | 3003 |
+| `apps/web`                    | A barebones React UI to sign in, watch prices move, bid and see the raw event log. A window onto the backend, not a product.            | 5173 |
+| `tools/loadgen`               | A Go tool that seeds users and auctions and samples PostgreSQL and Kafka into CSV for the scale scenarios. Not a service.               | n/a  |
 
-Direct dependencies are pinned to exact versions. Use `pnpm add --save-exact`
-when adding a dependency (the repository enforces this default), and commit the
-resulting `pnpm-lock.yaml` change.
+Principles the code is held to:
+
+- **Delivery may be duplicated.** Handlers are idempotent; a consumer records
+  each processed event in the same transaction as its effect, and acknowledges
+  Kafka only after that commit.
+- **Invariants live in the database.** Auction, winner and order rules are
+  protected by constraints and transactions, not only by application code.
+- **Money is never a float.** Amounts are decimal strings of minor units
+  (cents) end to end.
+- **Failure behavior is explicit.** Transaction, retry, ordering and
+  acknowledgement boundaries are spelled out, and tested where they matter.
+
+## Run it locally
+
+Everything runs on your machine: the infrastructure in Docker, the services as
+plain Node.js processes. There is no single "start everything" command yet; you
+start the infrastructure once and then run the services, each in its own
+terminal.
+
+### Prerequisites
+
+| Tool                | Version                  | Notes                                                                          |
+| ------------------- | ------------------------ | ------------------------------------------------------------------------------ |
+| Node.js             | 24.20.0 (see `.nvmrc`)   | The version is enforced (`engine-strict`). With nvm: `nvm install && nvm use`. |
+| pnpm                | 11.25.0                  | Pinned in `package.json`. Run `corepack enable` and the right version is used. |
+| Docker with Compose | Compose v2               | Runs PostgreSQL, Kafka and Valkey.                                             |
+| Go                  | Only for `tools/loadgen` | Optional. Not needed to run or test the services.                              |
+
+Free ports: `3001`, `3002`, `3003`, `5173`, `5432`, `9092` and `7001`–`7003`.
+
+### 1. Install, configure and build
+
+From the repository root:
 
 ```sh
 pnpm install
-pnpm check
-docker compose up -d postgres kafka kafka-init valkey-init valkey-topology-init
+
+# Local configuration. These files are git-ignored and ready to use as copied.
 cp .env.example .env
-pnpm db:migrate
-pnpm auth:keys:local local-2026-09
+for f in services/*/.env*.example; do cp -n "$f" "${f%.example}"; done
+
+# Local signing key for access tokens (written to services/identity-service/.local-keys)
+pnpm auth:keys:local
+
+pnpm build
 ```
 
-Use `pnpm format` to apply repository formatting, `pnpm format:check` to verify
-it without writing files, and `pnpm lint` for type-aware linting. `pnpm check`
-runs formatting, linting, type checks, unit tests with their coverage
-thresholds, and production builds; it needs no infrastructure. `pnpm test` runs
-only the unit tests. Integration and end-to-end tests are separate commands,
-described in [`docs/TESTING.md`](docs/TESTING.md).
-
-The Compose stack contains PostgreSQL, a single-node Kafka, and a three-node
-Valkey cluster. PostgreSQL runs
-`postgres:18.6-bookworm` to match the planned Amazon RDS for PostgreSQL 18.6
-engine version, and exposes the local `auction_db` database on port `5432`
-using the development-only credentials in `docker-compose.yml`.
-
-Kafka runs `apache/kafka:4.3.1` in KRaft mode (combined broker and controller,
-no ZooKeeper) with data in the `kafka43_data` volume. Host processes connect to
-`localhost:9092`; containers use `kafka:29092`. Its health check waits until
-the broker answers API requests. Automatic topic creation is disabled, so the
-one-shot `kafka-init` service provisions topics explicitly once Kafka is
-healthy:
-
-| Topic                | Partitions | Key         | Retention |
-| -------------------- | ---------- | ----------- | --------- |
-| `auction.events`     | 12         | `auctionId` | 7 days    |
-| `auction.events.dlq` | 1          | as received | 30 days   |
-
-`auction.events.dlq` holds the records the settlement worker could never process
-(see [`docs/SETTLEMENT.md`](docs/SETTLEMENT.md#the-dead-letter-topic)).
-
-`kafka-init` is idempotent (`--if-not-exists`) and exits after printing the
-topic description; rerun it with `docker compose up kafka-init`. It never
-changes the partition count of an existing topic: adding partitions remaps keys
-and would break per-auction ordering for in-flight data, so it must be a
-deliberate operation. Inspect topics with:
+### 2. Start the infrastructure
 
 ```sh
-docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic auction.events
-```
-
-To browse topics, messages, and consumer-group lag in a web UI, start Kafbat UI
-and open <http://localhost:8080>:
-
-```sh
-docker compose up -d kafka-ui
-```
-
-It connects to `kafka:29092` like any other container client and is bound to
-`127.0.0.1` because it has no login and can delete topics and reset offsets. It
-is a local tool; a production deployment would need authentication and a
-read-only configuration.
-
-The broker also exposes a test-only `FAULT_INJECTION` listener on
-`localhost:19093` that advertises `localhost:19092`, where the Kafka outage
-integration test runs a TCP proxy. Nothing else should use it.
-
-Valkey runs `valkey/valkey:9.0.6`, matching Amazon ElastiCache for Valkey 9.0,
-as the realtime gateway's pub/sub bus (see
-[`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md)). It runs in cluster
-mode with three primaries and no replicas on `localhost:7001`–`7003`. Each node
-announces the hostname `localhost`, so host processes can follow the endpoints
-in `CLUSTER SHARDS` replies and `MOVED` redirects; containers cannot use them
-yet. There is no persistence: the bus carries only pub/sub traffic, and cluster
-membership lives in memory. The one-shot `valkey-init` service forms the
-cluster once all three nodes are healthy. It changes nothing when the nodes
-already form one cluster covering every slot. Otherwise, for example after a
-node restarted blank, it resets all three and forms the cluster again. Rerun it
-with `docker compose up valkey-init`, and inspect the cluster with:
-
-```sh
-docker compose exec valkey-1 valkey-cli -p 7001 cluster shards
-```
-
-A second cluster, `valkey-topology-1`–`6` on `localhost:7101`–`7106` and formed
-by `valkey-topology-init`, is for tests that change the topology, such as
-moving a hash slot to another primary. Nothing else connects to it, so what
-those tests do cannot break a test that shares the first cluster. It has the
-same image and settings: three primaries (7101–7103) and one replica each
-(7104–7106), so tests can also fail a primary over.
-
-Tests come in three tiers, each in its own folder with its own command (see
-[`docs/TESTING.md`](docs/TESTING.md) for the rules and for coverage):
-
-| Command                 | Runs                                                      | Needs the Compose stack |
-| ----------------------- | --------------------------------------------------------- | ----------------------- |
-| `pnpm test:unit`        | `test/unit/` in every workspace                           | No                      |
-| `pnpm test:integration` | `test/integration/`, against real PostgreSQL/Kafka/Valkey | Yes                     |
-| `pnpm test:e2e`         | `tests/e2e`, every service as a black box                 | Yes                     |
-
-Integration and end-to-end tests do not skip themselves: they refuse to start
-unless the `TEST_*` variables they need are set, and say which are missing.
-`pnpm test:integration:local` and `pnpm test:e2e:local` set them for you from
-`scripts/local-test.env`, which points at the Compose stack above:
-
-```sh
-pnpm test:integration:local
-pnpm test:e2e:local
-```
-
-`tests/e2e` is the end-to-end suite. It compiles the services from source and
-runs each as its own process (the auction-service API, outbox publisher and
-finalizer, the relay, the edge, and the settlement worker), then follows a bid
-from HTTP to an SSE client, and a closed auction to its order. It treats every
-service as a black box, so each service's own tests stay self-contained.
-
-The outbox publisher tests, the finalizer tests, the settlement tests and the
-end-to-end suite create and drop their own temporary databases from
-`db/schema.sql` (so the database user needs `CREATEDB`), and their own Kafka
-topics. The Kafka outage test needs port
-`19092` free and reaches the broker through `TEST_KAFKA_FAULT_INJECTION_UPSTREAM`.
-
-## Continuous integration
-
-GitHub Actions (`.github/workflows/ci.yml`) runs one job on every pull request
-and on pushes to `master`:
-
-1. Starts `postgres`, `kafka`, and the six Valkey nodes (the shared cluster
-   and the topology cluster) from the root `docker-compose.yml`, waits for
-   their health checks, and requires the one-shot `kafka-init`, `valkey-init`
-   and `valkey-topology-init` to exit with 0.
-2. Installs with `pnpm install --frozen-lockfile` and checks that the native
-   Kafka client (librdkafka) loads.
-3. Runs `pnpm db:migrate`, which regenerates `db/schema.sql` with `pg_dump`
-   from the postgres container, and fails if the snapshot differs from the
-   committed file. Only the `-- Dumped from/by` version header lines are
-   ignored, because they depend on the committer's `pg_dump` build.
-4. Runs `pnpm check` (format, lint, typecheck, unit tests with coverage
-   thresholds, build), then `pnpm test:integration`, then `pnpm test:e2e`, as
-   separate steps so a failure names its tier. The `TEST_*` variables are set
-   for the whole job, so every integration test runs, including the Kafka
-   outage test.
-
-The integration and end-to-end Vitest configurations fail before running any
-test if a variable they need is missing, so neither tier can be skipped
-silently.
-
-To reproduce the CI run locally (port `19092` must be free):
-
-```sh
-docker compose up --detach --wait postgres kafka valkey-1 valkey-2 valkey-3 \
-  valkey-topology-1 valkey-topology-2 valkey-topology-3 \
-  valkey-topology-4 valkey-topology-5 valkey-topology-6
-docker compose up kafka-init valkey-init valkey-topology-init
+docker compose up -d --wait postgres kafka kafka-init valkey-init
 PATH="$PWD/scripts/compose-bin:$PATH" pnpm db:migrate
-git diff --exit-code --ignore-matching-lines='^-- Dumped (from|by) ' -- db/schema.sql
-pnpm check:all:local
 ```
 
-`check:all:local` runs `check`, `test:integration` and `test:e2e` with `CI=true`
-and the endpoints from `scripts/local-test.env`.
+The first command starts PostgreSQL, a single-node Kafka (and creates its
+topics) and a three-node Valkey cluster. The second creates the tables. Setting
+`PATH` makes `pg_dump` run inside the Postgres container, so you don't need
+PostgreSQL client tools installed. Details on every container are in
+[`docs/LOCAL_INFRASTRUCTURE.md`](docs/LOCAL_INFRASTRUCTURE.md).
 
-`scripts/compose-bin/pg_dump` runs `pg_dump` inside the postgres container, so
-it also works locally without PostgreSQL client tools. CI starts from empty
-volumes; a local stack keeps its data, so a clean run needs
-`docker compose down --volumes` first, which deletes local data.
+### 3. Start the services
 
-Database migrations are owned centrally because the initial services share
-`auction_db`. Use `pnpm db:status`, `pnpm db:migrate`, and `pnpm db:rollback`
-from the repository root. Migrate and rollback regenerate the committed
-`db/schema.sql` snapshot. See `db/migrations/README.md` for the workflow, naming,
-and schema decisions.
+Open one terminal per row, in this order (the auction service needs identity's
+public keys, and the edge needs the auction service):
 
-PostgreSQL 18 uses the versioned `postgres18_data` Compose volume mounted at
-`/var/lib/postgresql`, matching the official image's persistent-storage layout.
+| #   | Process             | Command                                                                       | Listens on |
+| --- | ------------------- | ----------------------------------------------------------------------------- | ---------- |
+| 1   | identity-service    | `pnpm --filter @auction-bonanza/identity-service start:local`                 | 3001       |
+| 2   | auction-service API | `pnpm --filter @auction-bonanza/auction-service start:local`                  | 3002       |
+| 3   | outbox publisher    | `pnpm --filter @auction-bonanza/auction-service start:outbox-publisher:local` | n/a        |
+| 4   | finalizer           | `pnpm --filter @auction-bonanza/auction-service start:finalizer:local`        | n/a        |
+| 5   | settlement worker   | `pnpm --filter @auction-bonanza/settlement-service start:local`               | n/a        |
+| 6   | realtime relay      | `pnpm --filter @auction-bonanza/realtime-gateway start:relay:local`           | n/a        |
+| 7   | realtime edge       | `pnpm --filter @auction-bonanza/realtime-gateway start:edge:local`            | 3003       |
+| 8   | web UI              | `pnpm web:dev`                                                                | 5173       |
 
-To exercise the identity service's runtime configuration loader:
+Each process validates its configuration at startup and exits with a clear
+message if something is missing. Logs are structured JSON. Stop a process with
+Ctrl-C.
+
+Check that the APIs are up:
 
 ```sh
-cp services/identity-service/.env.example services/identity-service/.env
-pnpm --filter @auction-bonanza/identity-service build
-pnpm --filter @auction-bonanza/identity-service start:local
+curl localhost:3001/health   # {"status":"ok"}
+curl localhost:3002/ready    # {"status":"ready"}
 ```
 
-The process validates all configuration before service startup. The `.env` file
-is ignored by Git; `.env.example` is the committed local-development contract.
-Signing keys under `services/identity-service/.local-keys` are also ignored and
-are for local development only.
+### 4. Try it
 
-The auction service uses the identity service's public JWKS and the same access
-token issuer/audience. To run it after applying migrations and starting
-identity:
+Open <http://localhost:5173>.
 
-```sh
-cp services/auction-service/.env.example services/auction-service/.env
-pnpm --filter @auction-bonanza/auction-service build
-pnpm --filter @auction-bonanza/auction-service start:local
-```
+1. Register two users, one in each of two browser windows (tokens are kept in
+   memory only, so a page reload signs you out).
+2. As the first user, create an auction that ends in 2 minutes.
+3. As the second user, place a bid. The price and leading bid update live in
+   both windows.
+4. Bid too low, or bid on your own auction, to see the rejection messages.
+5. Wait for the deadline. The phase moves from `open` to `ended` and then
+   `closed` once the finalizer runs, and settlement creates the order:
 
-Accepted bids reach Kafka through the auction service's separate outbox
-publisher worker:
+   ```sh
+   docker compose exec postgres psql -U auction auction_db -c 'SELECT * FROM orders'
+   ```
 
-```sh
-cp services/auction-service/.env.outbox-publisher.example services/auction-service/.env.outbox-publisher
-pnpm --filter @auction-bonanza/auction-service build
-pnpm --filter @auction-bonanza/auction-service start:outbox-publisher:local
-```
-
-Its delivery and ordering guarantees are described in
-[`docs/OUTBOX_PUBLISHING.md`](docs/OUTBOX_PUBLISHING.md).
-
-Auctions whose deadline has passed are closed by the finalizer, a third
-`auction-service` process. It records the winning bid (or an unsold result) and
-emits `AuctionClosed.v1` through the outbox, described in
-[`docs/FINALIZATION.md`](docs/FINALIZATION.md):
+The same flow works without the UI. Watch an auction's live stream (use an
+auction ID from the UI or from `curl localhost:3002/v1/auctions`):
 
 ```sh
-cp services/auction-service/.env.finalizer.example services/auction-service/.env.finalizer
-pnpm --filter @auction-bonanza/auction-service build
-pnpm --filter @auction-bonanza/auction-service start:finalizer:local
-```
-
-The settlement worker consumes `AuctionClosed.v1` and creates one order for the
-winner of each sold auction. It needs the `auction.events.dlq` topic, so run
-`kafka-init` again if your Kafka predates it. Its guarantees and failure
-behavior are in [`docs/SETTLEMENT.md`](docs/SETTLEMENT.md):
-
-```sh
-docker compose up kafka-init
-cp services/settlement-service/.env.settlement.example services/settlement-service/.env.settlement
-pnpm --filter @auction-bonanza/settlement-service build
-pnpm --filter @auction-bonanza/settlement-service start:local
-docker compose exec postgres psql -U auction auction_db -c 'SELECT * FROM orders'
-```
-
-The realtime gateway's relay forwards those events from Kafka to the Valkey
-cluster, one sharded channel per auction:
-
-```sh
-cp services/realtime-gateway/.env.relay.example services/realtime-gateway/.env.relay
-pnpm --filter @auction-bonanza/realtime-gateway build
-pnpm --filter @auction-bonanza/realtime-gateway start:relay:local
-```
-
-Watch an auction's channel with
-`docker compose exec valkey-1 valkey-cli -c -p 7001 ssubscribe auction:<id>`
-(`-c` follows the redirect to the node that owns the channel). Its guarantees
-are described in [`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md#relay).
-
-The gateway's SSE edge serves those channels to clients on port 3003. It reads
-live states from `auction-service`, so start the API first:
-
-```sh
-cp services/realtime-gateway/.env.edge.example services/realtime-gateway/.env.edge
-pnpm --filter @auction-bonanza/realtime-gateway start:edge:local
 curl -N 'http://localhost:3003/v1/stream?auctions=<id>'
 ```
 
-Each stream starts with one `snapshot` per auction (or `unavailable` for an
-auction that does not exist), then `bid-accepted` events; see
-[`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md#client-protocol).
+Each stream starts with a `snapshot` per auction, then `bid-accepted` events.
 
-## Web UI
+To see messages and consumer-group lag in Kafka, start the optional Kafka UI
+with `docker compose up -d kafka-ui` and open <http://localhost:8080>.
 
-`apps/web` is a barebones React UI for watching the backend work: sign in,
-browse auctions with live prices, bid, and see the raw event log. It is a view
-onto the services, not a product. With identity, auction-service, the outbox
-publisher, the relay and the edge running as above (and the finalizer, to see
-auctions close):
+### 5. Stop and reset
 
 ```sh
-pnpm web:dev
+docker compose down            # stops the infrastructure, keeps the data
+docker compose down --volumes  # also deletes the database, Kafka data and Valkey state
 ```
 
-Open <http://localhost:5173>. Design notes and limits are in
-[`docs/FRONTEND.md`](docs/FRONTEND.md).
+### Troubleshooting
 
-## Load tool
+| Symptom                                               | Likely cause and fix                                                                         |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `ERR_PNPM_UNSUPPORTED_ENGINE`                         | Wrong Node.js version. Use the one in `.nvmrc`.                                              |
+| A service exits at startup naming a missing variable  | Its `.env*` file is missing. Rerun the `cp` loop in step 1.                                  |
+| `Cannot find module .../dist/...`                     | Run `pnpm build` again.                                                                      |
+| auction-service fails to verify tokens                | Identity-service isn't running, or you skipped `pnpm auth:keys:local`. Start identity first. |
+| Settlement or the outbox publisher can't find a topic | Run `docker compose up kafka-init`.                                                          |
+| `port is already allocated` / `EADDRINUSE`            | Something else uses that port. Stop it or stop the previous run.                             |
+| `pg_dump: command not found` during `db:migrate`      | Prefix the command with `PATH="$PWD/scripts/compose-bin:$PATH"` as in step 2.                |
 
-`tools/loadgen` is a Go tool for the scale scenarios in the
-[roadmap](ACCEPTANCE.md): it seeds users and auctions and samples
-PostgreSQL and Kafka into CSV while a stack runs. Usage and the CSV columns are in
-[`tools/loadgen/README.md`](tools/loadgen/README.md).
+## Repository layout
+
+```text
+apps/web/              React UI (Vite)
+services/
+  identity-service/    users, sessions, JWKS
+  auction-service/     API, outbox publisher and finalizer
+  settlement-service/  Kafka consumer that creates orders
+  realtime-gateway/    relay (Kafka to Valkey) and SSE edge
+packages/              narrow shared packages (event contracts, token verification, HTTP routing)
+tools/loadgen/         Go load and sampling tool
+tests/e2e/             black-box tests across all services
+db/                    SQL migrations and the committed schema snapshot
+docs/                  design and behavior documentation
+scripts/               local helpers (keys, test environment, pg_dump wrapper)
+docker-compose.yml     the local infrastructure
+```
+
+Each service is independently buildable and testable and has its own `README.md`
+and `.env*.example` files.
+
+## Development
+
+Run these from the repository root.
+
+| Command                                         | What it does                                                                          | Needs Docker |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------- | ------------ |
+| `pnpm check`                                    | Format check, lint, type check, unit tests with coverage thresholds, production build | No           |
+| `pnpm test:unit`                                | Unit tests only                                                                       | No           |
+| `pnpm test:integration:local`                   | Integration tests against real PostgreSQL, Kafka and Valkey                           | Yes          |
+| `pnpm test:e2e:local`                           | End-to-end tests: every service as a black box                                        | Yes          |
+| `pnpm check:all:local`                          | Everything above, as CI runs it                                                       | Yes          |
+| `pnpm format` / `pnpm lint`                     | Apply formatting / run type-aware linting                                             | No           |
+| `pnpm db:status` / `db:migrate` / `db:rollback` | Database migrations; migrate and rollback also refresh `db/schema.sql`                | Yes          |
+
+The integration and end-to-end tiers need the full Compose stack, including the
+second Valkey cluster used by topology tests:
+
+```sh
+docker compose up -d --wait
+```
+
+They refuse to start (rather than skip) if their `TEST_*` variables are missing;
+the `:local` commands set them for you. Test tiers and their rules are in
+[`docs/TESTING.md`](docs/TESTING.md).
+
+Direct dependencies are pinned to exact versions. Use `pnpm add --save-exact`
+when adding one, and commit the resulting `pnpm-lock.yaml` change.
+
+GitHub Actions runs the same checks on every pull request and on pushes to
+`master`: it brings up the Compose stack, verifies that `db/schema.sql` matches
+the migrations, then runs `pnpm check`, the integration tests and the
+end-to-end tests. How to reproduce that run locally is in
+[`docs/LOCAL_INFRASTRUCTURE.md`](docs/LOCAL_INFRASTRUCTURE.md#continuous-integration).
+
+## Documentation
+
+| Document                                                       | Covers                                                                  |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [`ACCEPTANCE.md`](ACCEPTANCE.md)                               | Roadmap: failure and scale scenarios the system should handle           |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                 | Service boundaries, technology choices, authentication and availability |
+| [`docs/AUCTION_LIFECYCLE.md`](docs/AUCTION_LIFECYCLE.md)       | Auction phases and the bid-acceptance contract                          |
+| [`docs/OUTBOX_PUBLISHING.md`](docs/OUTBOX_PUBLISHING.md)       | How committed events reach Kafka; delivery and ordering guarantees      |
+| [`docs/FINALIZATION.md`](docs/FINALIZATION.md)                 | How ended auctions are closed and winners recorded                      |
+| [`docs/SETTLEMENT.md`](docs/SETTLEMENT.md)                     | Order creation, idempotency and the dead-letter topic                   |
+| [`docs/REALTIME_GATEWAY.md`](docs/REALTIME_GATEWAY.md)         | Relay, edge, client protocol and scaling characteristics                |
+| [`docs/FRONTEND.md`](docs/FRONTEND.md)                         | Web UI design decisions and known gaps                                  |
+| [`docs/TESTING.md`](docs/TESTING.md)                           | Unit, integration and end-to-end tiers                                  |
+| [`docs/LOCAL_INFRASTRUCTURE.md`](docs/LOCAL_INFRASTRUCTURE.md) | Compose services, Kafka topics, Valkey clusters, migrations, CI         |
+| [`tools/loadgen/README.md`](tools/loadgen/README.md)           | Seeding and sampling for the scale scenarios                            |
+
+## Tech stack
+
+Node.js 24 and TypeScript (strict, ES modules), Fastify 5, PostgreSQL 18 (plain
+SQL via `pg`, migrations with dbmate), Apache Kafka 4.3 in KRaft mode, Valkey 9
+(cluster mode), React 19 with Vite, Go for the load tool, Vitest, Oxlint and
+Oxfmt, Docker Compose and GitHub Actions. Local versions mirror the managed AWS
+services planned for deployment (RDS for PostgreSQL, ElastiCache for Valkey).

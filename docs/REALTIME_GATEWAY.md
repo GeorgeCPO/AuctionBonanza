@@ -781,14 +781,14 @@ can mark the stream as degraded.
 
 ## Scaling characteristics
 
-| Pressure                       | Scales with                                       | Limit and next step                                                                                                                         |
-| ------------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Total events/s                 | Relays, up to 12 partitions                       | Partition count. Adding partitions remaps keys and is a deliberate operation (see `README.md`).                                             |
-| One hot partition              | Nothing: one relay serves one partition           | The relay's per-message work is small, so the ceiling is high. Measuring it is the hot-partition scenario in the roadmap (`ACCEPTANCE.md`). |
-| Total connections              | Edges                                             | Memory and file descriptors per edge; the load balancer's connection limits.                                                                |
-| One hot auction, many watchers | Edges: one Valkey message per edge, local fan-out | The Valkey shard owning the channel carries `bids/s × subscribed edges`. At 100 bids/s and 50 edges, that is 5,000 messages/s.              |
-| Many distinct watched auctions | Valkey shards (channels spread by hash slot)      | Subscription count per edge connection.                                                                                                     |
-| Resync bursts                  | Bulk reads, batching, shared fetches              | `auction-service` read capacity; read replicas later.                                                                                       |
+| Pressure                       | Scales with                                       | Limit and next step                                                                                                                            |
+| ------------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Total events/s                 | Relays, up to 12 partitions                       | Partition count. Adding partitions remaps keys and is a deliberate operation (see [`LOCAL_INFRASTRUCTURE.md`](LOCAL_INFRASTRUCTURE.md#kafka)). |
+| One hot partition              | Nothing: one relay serves one partition           | The relay's per-message work is small, so the ceiling is high. Measuring it is the hot-partition scenario in the roadmap (`ACCEPTANCE.md`).    |
+| Total connections              | Edges                                             | Memory and file descriptors per edge; the load balancer's connection limits.                                                                   |
+| One hot auction, many watchers | Edges: one Valkey message per edge, local fan-out | The Valkey shard owning the channel carries `bids/s × subscribed edges`. At 100 bids/s and 50 edges, that is 5,000 messages/s.                 |
+| Many distinct watched auctions | Valkey shards (channels spread by hash slot)      | Subscription count per edge connection.                                                                                                        |
+| Resync bursts                  | Bulk reads, batching, shared fetches              | `auction-service` read capacity; read replicas later.                                                                                          |
 
 ## Testing
 

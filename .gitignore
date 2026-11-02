@@ -3,6 +3,7 @@ node_modules/
 dist/
 coverage/
 .env
+.env.finalizer
 .env.outbox-publisher
 .env.relay
 .env.edge
