@@ -17,7 +17,7 @@ cannot be a Kafka consumer: nothing arrives on a topic when `ends_at` passes.
 It must also live next to the auction aggregate, because the close and its
 outbox event have to commit in one PostgreSQL transaction.
 
-The consumer-side scenarios in `ACCEPTANCE.md` (killing a handler
+The consumer-side scenarios in the roadmap (`ACCEPTANCE.md`: killing a handler
 mid-message, delivering an event five times) belong to the settlement worker
 that consumes `AuctionClosed.v1` ([`SETTLEMENT.md`](SETTLEMENT.md)).
 

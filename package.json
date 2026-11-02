@@ -22,6 +22,7 @@
     "test:e2e": "pnpm --filter @auction-bonanza/e2e-tests run test:e2e",
     "test:e2e:local": "node scripts/with-local-test-env.mjs pnpm run test:e2e",
     "test:sim:replay": "pnpm --filter @auction-bonanza/realtime-gateway run test:sim:replay",
+    "web:dev": "pnpm --filter @auction-bonanza/web run dev",
     "loadgen:build": "go build -C tools/loadgen -o bin/loadgen ./cmd/loadgen",
     "loadgen:check": "node scripts/loadgen-check.mjs",
     "loadgen:test:integration": "go test -C tools/loadgen -race -count=1 -tags integration ./...",

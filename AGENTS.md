@@ -2,9 +2,9 @@
 
 ## Project context
 
-- Auction Bonanza is a learning-focused, real-time auction backend.
-- Read `README.md` for the product overview and `ACCEPTANCE.md` for the long-term failure and scale scenarios.
-- The goal is not only to make the system work, but to make its Kafka, PostgreSQL, consistency, and recovery behavior understandable and defensible.
+- Auction Bonanza is a real-time auction backend.
+- Read `README.md` for the product overview and `ACCEPTANCE.md` for the roadmap of long-term failure and scale scenarios.
+- The goal is not only to make the system work, but to make its Kafka, PostgreSQL, consistency, and recovery behavior understandable and documented.
 
 ## Repository and service boundaries
 
@@ -14,7 +14,7 @@
 - Use one root `docker-compose.yml` to run the local services and their infrastructure dependencies.
 - Keep shared packages narrow and purpose-specific. Do not create a broad `libs/common/` dumping ground or move service-owned domain logic into shared code.
 - Start with a single PostgreSQL database named `auction_db`, including the initial `users`, `auctions`, and `bids` tables. Do not force database-per-service prematurely.
-- Make service and data ownership increasingly explicit as the system evolves. Treat migrations toward stronger ownership boundaries as deliberate, observable learning exercises.
+- Make service and data ownership increasingly explicit as the system evolves. Treat migrations toward stronger ownership boundaries as deliberate, observable steps.
 
 ## Working approach
 
@@ -51,5 +51,5 @@
 
 ## Collaboration
 
-- Use concise explanations, but include enough reasoning to support the project's learning goals.
+- Use concise explanations, but include enough reasoning to support the project's design decisions.
 - Do not introduce custom agent roles by default. Use specialized or parallel agents only when explicitly requested or when a later project instruction calls for them.
