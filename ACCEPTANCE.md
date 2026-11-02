@@ -1,4 +1,6 @@
-## Project future acceptance tests
+# Roadmap
+
+Failure and scale scenarios the system is meant to handle, each followed by the expected outcome. Current behavior is documented under [`docs/`](docs/); the entries here are targets, not a status report.
 
 Kill an auction-engine instance halfway through handling a message.
 

@@ -1,6 +1,6 @@
 # loadgen
 
-A Go tool for the scale scenarios in [`ACCEPTANCE.md`](../../ACCEPTANCE.md). It is
+A Go tool for the scale scenarios in the [roadmap](../../ACCEPTANCE.md). It is
 not a service and shares no code with the TypeScript services. This first stage
 has two jobs:
 

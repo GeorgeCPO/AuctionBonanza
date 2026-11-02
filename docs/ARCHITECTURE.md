@@ -1,6 +1,6 @@
 # Initial Architecture
 
-Status: accepted as the initial direction; expected to evolve through deliberate exercises.
+Status: accepted as the initial direction; expected to evolve.
 
 ## Goals
 
@@ -89,7 +89,7 @@ failure behavior.
 
 The first phase uses one PostgreSQL database, `auction_db`, with the initial `users`, `auctions`, and `bids` tables. Database-per-service is not required at the start.
 
-Even while the database is shared, table writes should have a clear owning service. Moving toward stronger schema or database ownership later is part of the intended learning path and must be performed without unnecessary downtime.
+Even while the database is shared, table writes should have a clear owning service. Moving toward stronger schema or database ownership later is a planned step and must be performed without unnecessary downtime.
 
 ### Kafka
 
@@ -109,7 +109,7 @@ Even while the database is shared, table writes should have a clear owning servi
 - Publish all auction events to one topic, `auction.events`, so different event types of one auction share a partition and a single order. Topics are provisioned explicitly; automatic topic creation is disabled. The one other topic, `auction.events.dlq`, holds records the settlement worker could never process, copied unchanged with headers that say why.
 - Hold outbox row locks through Kafka publication and mark events published only after an `acks=all` acknowledgement. This trades one PostgreSQL connection per publication loop for clean normal-case ordering; the lease-based alternative is discussed in [`OUTBOX_PUBLISHING.md`](OUTBOX_PUBLISHING.md).
 
-Start with versioned JSON event schemas in `packages/contracts`. A schema registry and another encoding such as Avro or Protobuf can be introduced later as a separate compatibility exercise.
+Start with versioned JSON event schemas in `packages/contracts`. A schema registry and another encoding such as Avro or Protobuf can be introduced later as a separate compatibility change.
 
 ### Client live updates
 

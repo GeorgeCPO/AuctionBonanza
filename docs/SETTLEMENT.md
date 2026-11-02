@@ -241,7 +241,7 @@ Ordering across auctions is irrelevant to settlement.
 - **Settlement reads all bid traffic.** `auction.events` carries every event
   type on one topic, so the worker reads and discards each `BidAccepted.v1`, and
   lag on bids delays settlement. Hot-auction behaviour is measured elsewhere
-  ([`ACCEPTANCE.md`](../ACCEPTANCE.md)); a filtered topic or stream would be the
+  (see the [roadmap](../ACCEPTANCE.md)); a filtered topic or stream would be the
   fix if this becomes the bottleneck.
 - **A permanently bad record stays on the dead-letter topic until a person acts.**
   Settlement keeps going, but that auction has no order. There is no alert.

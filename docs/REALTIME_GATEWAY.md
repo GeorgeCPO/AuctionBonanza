@@ -781,14 +781,14 @@ can mark the stream as degraded.
 
 ## Scaling characteristics
 
-| Pressure                       | Scales with                                       | Limit and next step                                                                                                            |
-| ------------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Total events/s                 | Relays, up to 12 partitions                       | Partition count. Adding partitions remaps keys and is a deliberate operation (see `README.md`).                                |
-| One hot partition              | Nothing: one relay serves one partition           | The relay's per-message work is small, so the ceiling is high. Measuring it is the ACCEPTANCE.md hot-partition exercise.       |
-| Total connections              | Edges                                             | Memory and file descriptors per edge; the load balancer's connection limits.                                                   |
-| One hot auction, many watchers | Edges: one Valkey message per edge, local fan-out | The Valkey shard owning the channel carries `bids/s × subscribed edges`. At 100 bids/s and 50 edges, that is 5,000 messages/s. |
-| Many distinct watched auctions | Valkey shards (channels spread by hash slot)      | Subscription count per edge connection.                                                                                        |
-| Resync bursts                  | Bulk reads, batching, shared fetches              | `auction-service` read capacity; read replicas later.                                                                          |
+| Pressure                       | Scales with                                       | Limit and next step                                                                                                                         |
+| ------------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Total events/s                 | Relays, up to 12 partitions                       | Partition count. Adding partitions remaps keys and is a deliberate operation (see `README.md`).                                             |
+| One hot partition              | Nothing: one relay serves one partition           | The relay's per-message work is small, so the ceiling is high. Measuring it is the hot-partition scenario in the roadmap (`ACCEPTANCE.md`). |
+| Total connections              | Edges                                             | Memory and file descriptors per edge; the load balancer's connection limits.                                                                |
+| One hot auction, many watchers | Edges: one Valkey message per edge, local fan-out | The Valkey shard owning the channel carries `bids/s × subscribed edges`. At 100 bids/s and 50 edges, that is 5,000 messages/s.              |
+| Many distinct watched auctions | Valkey shards (channels spread by hash slot)      | Subscription count per edge connection.                                                                                                     |
+| Resync bursts                  | Bulk reads, batching, shared fetches              | `auction-service` read capacity; read replicas later.                                                                                       |
 
 ## Testing
 
@@ -882,17 +882,17 @@ cannot pass by doing nothing.
    shared cluster could break a test that happens to use a channel in that
    slot, and no rule about which ids tests may use would hold as tests are
    added. It has one replica per primary (7104–7106) for the failover
-   exercise.
+   test.
 3. **Relay:** the consumer, envelope, publish-then-commit, pause on Valkey
    failure, and starting new groups at the oldest retained event.
 4. **Edge**, in two steps:
    1. The thin edge (implemented): the subscription registry, batched
       live-state reads, the version rule, SSE, heartbeats, and a resync on
       every Valkey reconnect, through node-redis's cluster client.
-   2. The shard subscriber with a `CLUSTER SETSLOT` and failover exercise,
+   2. The shard subscriber with a `CLUSTER SETSLOT` and failover test,
       conflation, and a spread-out drain.
-5. **Documentation and exercises:** update this document from "proposed". The
-   local topology cluster has replicas, and a primary-failover exercise is in
+5. **Documentation and tests:** update this document from "proposed". The
+   local topology cluster has replicas, and a primary-failover test is in
    place.
 
 ## Open questions

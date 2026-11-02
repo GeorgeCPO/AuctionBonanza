@@ -138,8 +138,8 @@ count does not measure.
 **End-to-end coverage is not measured.** The suite is a black box by design: it
 compiles each service into a temporary directory and talks to the running
 processes, and imports none of their code. Instrumenting that costs more than
-the number is worth. Its coverage is the list of scenarios in
-[`ACCEPTANCE.md`](../ACCEPTANCE.md).
+the number is worth. Its coverage is the list of scenarios in the
+[roadmap](../ACCEPTANCE.md).
 
 There is no merged repository-wide report. Per-workspace reports and thresholds
 match the service ownership model and keep each workspace testable on its own.

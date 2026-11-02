@@ -2,15 +2,20 @@
 
 Real-time auction platform
 
-Users can create auctions, place bids, watch prices update live, use automatic/max bidding, and eventually settle an auction into an order/payment.
-
-Then add load-generating bots so you're dealing with millions of auctions and hundreds of millions of bids rather than your own five test users.
+Users register, create auctions, place bids, and watch prices update live. When an auction ends it is closed, the winning bid is recorded, and an order is created for the winner. Automatic (max) bidding and payment are planned.
 
 ## Description
 
-Develop a robust auction backend that will confront "distributed system" problems.
+A backend for live auctions, built as small services that share one PostgreSQL database (`auction_db`) and exchange events through Kafka:
 
-This is a project aimed to turn a competent backend engineer into someone who can confidently discuss Kafka partition strategy, database internals, distributed consistency, SQL optimization, migrations and AWS architecture in a senior-level interview.
+- **identity-service**: registration, sign-in, short-lived access tokens, and rotating refresh tokens.
+- **auction-service**: the auction lifecycle and idempotent bid acceptance in PostgreSQL transactions. A transactional outbox publishes `BidAccepted` events to Kafka, and a finalizer closes ended auctions and records the winner.
+- **realtime-gateway**: a relay from Kafka to Valkey, and an SSE edge that sends each client a snapshot followed by live bid events.
+- **settlement-service**: consumes `AuctionClosed` events and creates one order per sold auction.
+- **apps/web**: a minimal web UI for watching prices update and placing bids.
+- **tools/loadgen**: a Go load tool that seeds users and auctions and samples PostgreSQL and Kafka.
+
+Message delivery is treated as potentially duplicated, handlers are idempotent, and auction, winner and order invariants are protected by database constraints and transactions. How each component behaves and recovers is documented under [`docs/`](docs/). [`ACCEPTANCE.md`](ACCEPTANCE.md) is the roadmap of failure and scale scenarios the system is meant to handle.
 
 ## Tech stack
 
@@ -306,7 +311,7 @@ Open <http://localhost:5173>. Design notes and limits are in
 
 ## Load tool
 
-`tools/loadgen` is a Go tool for the scale scenarios in
-[`ACCEPTANCE.md`](ACCEPTANCE.md): it seeds users and auctions and samples
+`tools/loadgen` is a Go tool for the scale scenarios in the
+[roadmap](ACCEPTANCE.md): it seeds users and auctions and samples
 PostgreSQL and Kafka into CSV while a stack runs. Usage and the CSV columns are in
 [`tools/loadgen/README.md`](tools/loadgen/README.md).
